@@ -22,3 +22,7 @@ An action-RPG style camera for World of Warcraft (built for WoW Forever, interfa
 ## Changes
 
 See [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
