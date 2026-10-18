@@ -24,7 +24,7 @@ local L = setmetatable({}, { __index = function(_, key)
 end })
 
 -- Version information and release notes.
-local Meta = { version = "1.3.1" }
+local Meta = { version = "1.3.2" }
 do
     local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
     if get then
@@ -33,6 +33,7 @@ do
     end
 end
 Meta.notes = {
+    "/acam cvars saves every camera and gamepad setting into the addon's saved file, for troubleshooting",
     "New Halo targeting frame (now the default): a ring that drains with your target's health, pulses while it casts, and marks elites",
     "Distance under the targeting frame: exact for group members, a bracket such as 20-25 yd for anything else (worked out from your spells' ranges)",
     "Targeting Frame tab: Show distance, Health on halo and Casting warning tickboxes",
@@ -3883,6 +3884,7 @@ local function Help()
     print("  framealpha <0.2-1>  framecurve <0-1>  frameshift <-40..40>   opacity / curvature / distance shift")
     print("  frametest             draw the frame at the screen center to check it draws at all")
     print("  framestyle            cycle the style: reticle, ground ring, solid triangles, outline")
+    print("  cvars [label]         save every camera and gamepad setting the game has into the addon's saved file (for troubleshooting)")
     print("  npcs                  switch focusing of all friendly targets (NPCs, players, group, pets, critters) on or off together")
     print("  combat                toggle 'focus enemies only in combat'")
     print("  shoulder <-10..10>      over-the-shoulder offset")
@@ -4039,6 +4041,43 @@ SlashCmdList["ACAM"] = function(msg)
         db.fxStyle = (db.fxStyle == "halo") and "reticle" or (db.fxStyle == "reticle") and "ring" or (db.fxStyle == "ring") and "solid"
             or (db.fxStyle == "solid") and "outline" or "halo"
         Print("Targeting frame style: " .. db.fxStyle)
+    elseif cmd == "cvars" then
+        -- Records every camera / gamepad setting this client has, with its value, into the saved
+        -- variables file (WTF\Account\<account>\SavedVariables\TenKsUltimateARPGCamera.lua) after /reload.
+        local label = (rest and rest ~= "" and rest) or (Detect.gamepad() and "gamepad" or "mouse")
+        local names, seen = {}, {}
+        local function want(n)
+            local l = n:lower()
+            return l:find("camera") or l:find("gamepad") or l:find("actioncam") or l:find("cursor") or l:find("mouselook")
+                or l:find("pitch") or l:find("yaw") or l:find("softtarget") or l:find("interact")
+        end
+        if C_Console and C_Console.GetAllCommands then
+            local ok, all = pcall(C_Console.GetAllCommands)
+            if ok and type(all) == "table" then
+                for _, c in ipairs(all) do
+                    local n = type(c) == "table" and c.command
+                    if type(n) == "string" and want(n) and not seen[n] then seen[n] = true; names[#names + 1] = n end
+                end
+            end
+        end
+        for _, n in ipairs({ "GamePadEnable", "GamePadCameraYawSpeed", "GamePadCameraPitchSpeed", "GamePadCameraLookMaxYaw",
+            "GamePadCameraLookMaxPitch", "GamePadFaceMovementMaxAngle", "GamePadFaceMovementMaxAngleCombat", "GamePadTurnWithCamera",
+            "GamePadCursorCentering", "GamePadCursorForTargeting", "GamePadCursorAutoEnable", "cameraSmoothStyle",
+            "cameraSmoothTrackingStyle", "cameraFov", "test_cameraOverShoulder", "test_cameraDynamicPitch",
+            "test_cameraHeadMovementStrength", "test_cameraTargetFocusEnemyEnable", "test_cameraTargetFocusInteractEnable",
+            "cameraDistanceMaxZoomFactor", "CameraKeepCharacterCentered", "CameraReduceUnexpectedMovement" }) do
+            if not seen[n] then seen[n] = true; names[#names + 1] = n end
+        end
+        table.sort(names, function(a, b) return a:lower() < b:lower() end)
+        local vals, n = {}, 0
+        for _, name in ipairs(names) do
+            local ok, v = pcall(getCVar, name)
+            if ok and v ~= nil and not issecret(v) then vals[name] = tostring(v); n = n + 1 end
+        end
+        db.cvarDump = db.cvarDump or {}
+        db.cvarDump[label] = { when = date and date("%Y-%m-%d %H:%M:%S") or "", gamepad = Detect.gamepad() and true or false,
+            gamepadWhy = select(2, Detect.gamepad()), addonOn = db.enabled and true or false, values = vals }
+        Print(string.format("Saved %d camera/gamepad settings as \"%s\". Type /reload, then send the file WTF\\Account\\<account>\\SavedVariables\\%s.lua.", n, label, ADDON))
     elseif cmd == "npcs" then
         local anyOn = false
         for _, k in ipairs(FRIENDLY_FOCUS_KEYS) do if db[k] ~= false then anyOn = true end end

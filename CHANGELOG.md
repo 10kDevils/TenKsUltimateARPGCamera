@@ -2,6 +2,9 @@
 
 Versioning: the third digit counts meaningful changes since the second digit last went up (bumped automatically). The first two digits change only with explicit permission.
 
+## 1.3.2
+- New `/acam cvars [label]`: saves every camera / gamepad / soft-target related setting this client has (found through the game's console command list, plus a fixed list of known names) with its current value into the saved variables under `cvarDump[label]` (label defaults to "gamepad" or "mouse"). For working out what WoW Forever's gamepad camera overrides.
+
 ## 1.3.1
 - **New "Halo" targeting-frame style, now the default** (existing installs switch to it once; the other four styles stay selectable). 48 small segments around the target that drain clockwise-from-the-top as it loses health; thin inner hairline; four gold ticks that turn with the rotation setting (lock-on adds a twist); gold chevron above (doubled for elite / rare / boss, colored by classification); soft bloom behind (new texture Media/halo_glow.tga); outer orange ring that pulses while the target casts or channels and fills with cast progress when the game shares the timing. Health is secret in this client: each segment is a clipped window onto one long StatusBar the game fills, so the addon never reads or compares the value; if the client refuses, the ring stays fully lit.
 - **Distance readout** under the frame (all styles): exact yards for group members (UnitDistanceSquared); otherwise a bracket from your spellbook's spell ranges (up to 3 spells per range, rescanned when spells/talents change) plus the interact distances (10 / 28 yd): "20-25 yd", "< 30 yd", "40+ yd" or "melee". Elite / Rare / Boss tag after it. The bracket also drives the frame's distance scaling, replacing the old 6/20/40 yd guesses.
