@@ -1,0 +1,4 @@
+<Bindings>
+    <Binding name="TENKSARPGCAMERA_MENU" header="TENKSARPGCAMERA">TenKsUltimateARPGCamera_ToggleMenu()</Binding>
+    <Binding name="TENKSARPGCAMERA_TOGGLE">TenKsUltimateARPGCamera_ToggleCamera()</Binding>
+</Bindings>

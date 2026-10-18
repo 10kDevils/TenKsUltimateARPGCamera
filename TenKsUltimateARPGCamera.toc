@@ -1,0 +1,19 @@
+## Interface: 16001
+## Title: 10k's Ultimate ARPG Camera
+## Notes: Action-RPG style camera: the view swings toward your target when you engage, with dynamic pitch, shoulder offset, a targeting frame and a longer zoom.
+## Author: 10k
+## X-Category: Camera
+# Fill these in once the addon has pages on the download sites:
+# ## X-Website: 
+# ## X-Curse-Project-ID: 
+# ## X-WoWI-ID: 
+# ## X-Wago-ID: 
+## Version: 1.3.1
+## SavedVariables: TenKsUltimateARPGCameraDB
+## IconTexture: Interface\Icons\INV_Misc_Gear_01
+## AddonCompartmentFunc: TenKsUltimateARPGCamera_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: TenKsUltimateARPGCamera_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: TenKsUltimateARPGCamera_OnAddonCompartmentLeave
+
+Locales.lua
+TenKsUltimateARPGCamera.lua
