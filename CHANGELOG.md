@@ -2,6 +2,10 @@
 
 Versioning: the third digit counts meaningful changes since the second digit last went up (bumped automatically). The first two digits change only with explicit permission.
 
+## 1.3.3
+- **Fixed the gamepad camera overriding the addon on WoW Forever.** The Steam Deck dump showed `CameraKeepCharacterCentered = 1` with a controller active (the addon writes 0): gamepad mode puts it back on, which makes the game ignore the shoulder offset and most ActionCam settings. The addon only re-sent a setting when its own value changed, so it never noticed. New guard: about once a second (every 2 s with Battery saver), and on the next frame after GAME_PAD_ACTIVE_CHANGED / GAME_PAD_CONNECTED / GAME_PAD_DISCONNECTED / CVAR_UPDATE / PLAYER_ENTERING_WORLD, every setting the addon has written is read back and re-written if the game changed it (numbers compared with a small tolerance). If the game changes the same setting back 5 times within 30 s the addon prints a one-time chat warning naming it; `/acam debug` lists every setting it had to put back and what the game had set it to.
+- `/acam cvars` also uses the older `ConsoleGetAllCommands` when `C_Console.GetAllCommands` is missing (on WoW Forever only the fixed list was captured).
+
 ## 1.3.2
 - New `/acam cvars [label]`: saves every camera / gamepad / soft-target related setting this client has (found through the game's console command list, plus a fixed list of known names) with its current value into the saved variables under `cvarDump[label]` (label defaults to "gamepad" or "mouse"). For working out what WoW Forever's gamepad camera overrides.
 

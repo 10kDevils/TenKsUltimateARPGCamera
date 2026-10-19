@@ -24,7 +24,7 @@ local L = setmetatable({}, { __index = function(_, key)
 end })
 
 -- Version information and release notes.
-local Meta = { version = "1.3.2" }
+local Meta = { version = "1.3.3" }
 do
     local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
     if get then
@@ -33,6 +33,7 @@ do
     end
 end
 Meta.notes = {
+    "Fixed: with a controller the game turned \"Keep character centered\" back on, which cancelled the shoulder offset and most of the camera. The addon now puts any camera setting the game changes back within a second",
     "/acam cvars saves every camera and gamepad setting into the addon's saved file, for troubleshooting",
     "New Halo targeting frame (now the default): a ring that drains with your target's health, pulses while it casts, and marks elites",
     "Distance under the targeting frame: exact for group members, a bracket such as 20-25 yd for anything else (worked out from your spells' ranges)",
@@ -376,6 +377,45 @@ local function SetC(name, value)
     if written[name] == text then return end
     written[name] = text
     pcall(setCVar, name, text)
+end
+
+-- Guard: the game can put camera settings back behind the addon's back. Switching to a gamepad on
+-- WoW Forever turns "Keep character centered" back on, for example, which silently cancels the shoulder
+-- offset and most of the action camera. About once a second (and straight away on gamepad and setting
+-- changes) every setting the addon has written is read back and written again if it was changed.
+do
+    local fixes, warned = {}, {}
+    local function differs(a, b)
+        local x, y = tonumber(a), tonumber(b)
+        if x and y then return math.abs(x - y) > 0.005 end
+        return tostring(a) ~= tostring(b)
+    end
+    function Detect.guard()
+        if not (db and db.enabled) then return end
+        local now = GetTime and GetTime() or 0
+        for name, text in pairs(written) do
+            local ok, cur = pcall(getCVar, name)
+            if ok and cur ~= nil and not issecret(cur) and differs(cur, text) then
+                pcall(setCVar, name, text)
+                local f = fixes[name] or { n = 0, since = now }
+                if now - f.since > 30 then f.n, f.since = 0, now end
+                f.n = f.n + 1
+                f.last, f.from = now, tostring(cur)
+                fixes[name] = f
+                if f.n >= 5 and not warned[name] then
+                    warned[name] = true
+                    Print(string.format(L["The game keeps changing %s back to %s; the addon keeps setting it again. Check the game's camera and accessibility options."], name, tostring(cur)))
+                end
+            end
+        end
+    end
+    Detect.guardFixes = fixes
+    local g = CreateFrame("Frame") -- the regular check runs from the main update loop below
+    for _, ev in ipairs({ "GAME_PAD_ACTIVE_CHANGED", "GAME_PAD_CONNECTED", "GAME_PAD_DISCONNECTED", "CVAR_UPDATE",
+        "PLAYER_ENTERING_WORLD" }) do
+        pcall(g.RegisterEvent, g, ev)
+    end
+    g:SetScript("OnEvent", function() Detect.guardSoon = true end) -- check on the next frame
 end
 
 -- Nameplates ------------------------------------------------------------
@@ -2197,6 +2237,13 @@ fxDriver:SetScript("OnUpdate", function(self, elapsed)
         end
     end
 
+    -- settings the game may have changed back
+    tm.guard = (tm.guard or 0) + elapsed
+    if Detect.guardSoon or tm.guard >= (lazy and 2 or 1) then
+        tm.guard, Detect.guardSoon = 0, nil
+        Detect.guard()
+    end
+
     -- situation profile
     tm.profile = tm.profile + elapsed
     if tm.profile > (lazy and 0.2 or 0.1) then
@@ -4004,6 +4051,9 @@ SlashCmdList["ACAM"] = function(msg)
                 tostring(getCVar(CV.enemyEnable)), tostring(getCVar(CV.interactEnable))))
         end
         print(string.format("  combatOnly=%s yaw=%.2f pitch=%.2f", tostring(db.combatOnly), Cur("yaw"), Cur("pitch")))
+        for name, f in pairs(Detect.guardFixes or {}) do
+            print(string.format("  put back %s %d times (game had set it to %s)", name, f.n, tostring(f.from)))
+        end
         print(string.format("  game focus blend=%.2f (goal %d)", ramp, rampGoal))
         print(string.format("  dynamic fov: speed %.1f yd/s (level %.2f), %d enemies fighting you (level %.2f) | letterbox %.3f | gamepad %s",
             DynFov.yps, DynFov.speed, DynFov.enemies, DynFov.crowd, shown.lbSize or 0, tostring(Detect.gamepad())))
@@ -4051,8 +4101,9 @@ SlashCmdList["ACAM"] = function(msg)
             return l:find("camera") or l:find("gamepad") or l:find("actioncam") or l:find("cursor") or l:find("mouselook")
                 or l:find("pitch") or l:find("yaw") or l:find("softtarget") or l:find("interact")
         end
-        if C_Console and C_Console.GetAllCommands then
-            local ok, all = pcall(C_Console.GetAllCommands)
+        local getAll = (C_Console and C_Console.GetAllCommands) or ConsoleGetAllCommands
+        if getAll then
+            local ok, all = pcall(getAll)
             if ok and type(all) == "table" then
                 for _, c in ipairs(all) do
                     local n = type(c) == "table" and c.command
