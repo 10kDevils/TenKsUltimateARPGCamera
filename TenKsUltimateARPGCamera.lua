@@ -24,7 +24,7 @@ local L = setmetatable({}, { __index = function(_, key)
 end })
 
 -- Version information and release notes.
-local Meta = { version = "1.3.4" }
+local Meta = { version = "1.3.5" }
 do
     local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
     if get then
@@ -33,6 +33,7 @@ do
     end
 end
 Meta.notes = {
+    "/acam padtest: with a controller, finds which gamepad or camera setting makes the game keep the character centered",
     "When the game locks a camera setting (gamepad mode on WoW Forever keeps the character centered), the addon stops fighting it every second, so nothing flickers. /acam debug shows what is locked and who changed it",
     "Fixed: with a controller the game turned \"Keep character centered\" back on, which cancelled the shoulder offset and most of the camera. The addon now puts any camera setting the game changes back within a second",
     "/acam cvars saves every camera and gamepad setting into the addon's saved file, for troubleshooting",
@@ -395,7 +396,7 @@ do
     -- does this to "Keep character centered"). Fighting it every second only causes flicker, so after
     -- 5 take-backs in 30 seconds the addon only tries again every 30 seconds.
     function Detect.guard()
-        if not (db and db.enabled) then return end
+        if not (db and db.enabled) or Detect.testing then return end
         local now = GetTime and GetTime() or 0
         for name, text in pairs(written) do
             local f = fixes[name]
@@ -439,6 +440,95 @@ do
         if C_CVar and C_CVar.SetCVar then pcall(hooksecurefunc, C_CVar, "SetCVar", Watch) end
     end
     Detect.guardFixes = fixes
+
+    -- /acam padtest: with the controller in use, tries one gamepad / camera setting at a time and checks whether
+    -- "Keep character centered" stays off with it. Each trial: change the setting, wait, switch centering off,
+    -- then watch it for 2.5 seconds. Everything is put back afterwards. Results go to chat and to the saved file.
+    local KC = "CameraKeepCharacterCentered"
+    local TRIALS = {
+        { "nothing changed (baseline)" },
+        { "GamePadTurnWithCamera = 0", cvar = "GamePadTurnWithCamera", v = "0" },
+        { "GamePadTurnWithCamera = 1", cvar = "GamePadTurnWithCamera", v = "1" },
+        { "GamePadFaceMovementMaxAngle = 180", cvar = "GamePadFaceMovementMaxAngle", v = "180" },
+        { "GamePadFaceMovementMaxAngleCombat = 0", cvar = "GamePadFaceMovementMaxAngleCombat", v = "0" },
+        { "GamePadCameraLookMaxYaw = 90", cvar = "GamePadCameraLookMaxYaw", v = "90" },
+        { "GamePadCameraLookMaxPitch = 45", cvar = "GamePadCameraLookMaxPitch", v = "45" },
+        { "cameraSmoothTrackingStyle = 0", cvar = "cameraSmoothTrackingStyle", v = "0" },
+        { "cameraSmoothStyle = 1", cvar = "cameraSmoothStyle", v = "1" },
+        { "cameraSmoothStyle = 2", cvar = "cameraSmoothStyle", v = "2" },
+        { "GamePadCursorAutoEnable = 0", cvar = "GamePadCursorAutoEnable", v = "0" },
+        { "GamePadCursorForTargeting = 0", cvar = "GamePadCursorForTargeting", v = "0" },
+        { "GamePadOverlapMouseMs = 0", cvar = "GamePadOverlapMouseMs", v = "0" },
+        { "GamePadAnalogMovement = 0", cvar = "GamePadAnalogMovement", v = "0" },
+        { "GamePadSingleActiveID = 0", cvar = "GamePadSingleActiveID", v = "0" },
+        { "CameraReduceUnexpectedMovement = 0", cvar = "CameraReduceUnexpectedMovement", v = "0" },
+        { "free look on", fn = "SetGamePadFreeLook", v = true },
+        { "free look off", fn = "SetGamePadFreeLook", v = false },
+        { "GamePadEnable = 0 (controller switched off)", cvar = "GamePadEnable", v = "0" },
+    }
+    local pt = { frame = CreateFrame("Frame") }
+    local function apply(t, undo)
+        if t.cvar then
+            if undo then
+                if t.old ~= nil then pcall(setCVar, t.cvar, t.old) end
+            else
+                local ok, old = pcall(getCVar, t.cvar)
+                t.old = ok and old or nil
+                if t.old == nil then return false end
+                pcall(setCVar, t.cvar, t.v)
+            end
+        elseif t.fn then
+            local f = _G[t.fn]
+            if not f then return false end
+            if undo then pcall(f, false) else pcall(f, t.v) end
+        end
+        return true
+    end
+    local function finish()
+        pt.frame:SetScript("OnUpdate", nil)
+        Detect.testing = nil
+        pcall(setCVar, KC, "0")
+        Print(L["Pad test done. Results:"])
+        for _, line in ipairs(db.padTest.results) do print("  " .. line) end
+        Print(L["Type /reload and send the saved file if you want me to look at it."])
+        Detect.guardSoon = true
+    end
+    function Detect.padTest()
+        if Detect.testing then Print(L["The pad test is already running."]) return end
+        local on, why = Detect.gamepad()
+        Detect.testing = true
+        db.padTest = { when = date and date("%Y-%m-%d %H:%M:%S") or "", gamepad = on and true or false, why = why, results = {} }
+        Print(L["Pad test: keep the controller in your hands and stand still for about a minute. Touch a stick now and then so the game keeps treating the controller as active."])
+        local i, phase, t0, reverts, okTrial = 0, "next", 0, 0, true
+        pt.frame:SetScript("OnUpdate", function(_, dt)
+            local now = GetTime()
+            if phase == "next" then
+                if i > 0 then apply(TRIALS[i], true) end
+                i = i + 1
+                if i > #TRIALS then finish() return end
+                okTrial = apply(TRIALS[i])
+                if not okTrial then
+                    table.insert(db.padTest.results, TRIALS[i][1] .. ": not in this game, skipped")
+                    return
+                end
+                phase, t0 = "settle", now
+            elseif phase == "settle" and now - t0 >= 1.2 then
+                pcall(setCVar, KC, "0")
+                phase, t0, reverts = "watch", now, 0
+            elseif phase == "watch" then
+                local ok, v = pcall(getCVar, KC)
+                if ok and tostring(v) ~= "0" then
+                    reverts = reverts + 1
+                    pcall(setCVar, KC, "0")
+                end
+                if now - t0 >= 2.5 then
+                    local line = string.format("%s: %s", TRIALS[i][1], reverts == 0 and "CENTERING STAYS OFF" or ("forced back on " .. reverts .. " times"))
+                    table.insert(db.padTest.results, line)
+                    phase = "next"
+                end
+            end
+        end)
+    end
     local g = CreateFrame("Frame") -- the regular check runs from the main update loop below
     for _, ev in ipairs({ "GAME_PAD_ACTIVE_CHANGED", "GAME_PAD_CONNECTED", "GAME_PAD_DISCONNECTED", "CVAR_UPDATE",
         "PLAYER_ENTERING_WORLD" }) do
@@ -3960,6 +4050,7 @@ local function Help()
     print("  framealpha <0.2-1>  framecurve <0-1>  frameshift <-40..40>   opacity / curvature / distance shift")
     print("  frametest             draw the frame at the screen center to check it draws at all")
     print("  framestyle            cycle the style: reticle, ground ring, solid triangles, outline")
+    print("  padtest               with a controller: find which setting makes the game keep the character centered")
     print("  cvars [label]         save every camera and gamepad setting the game has into the addon's saved file (for troubleshooting)")
     print("  npcs                  switch focusing of all friendly targets (NPCs, players, group, pets, critters) on or off together")
     print("  combat                toggle 'focus enemies only in combat'")
@@ -4123,6 +4214,8 @@ SlashCmdList["ACAM"] = function(msg)
         db.fxStyle = (db.fxStyle == "halo") and "reticle" or (db.fxStyle == "reticle") and "ring" or (db.fxStyle == "ring") and "solid"
             or (db.fxStyle == "solid") and "outline" or "halo"
         Print("Targeting frame style: " .. db.fxStyle)
+    elseif cmd == "padtest" then
+        Detect.padTest()
     elseif cmd == "cvars" then
         -- Records every camera / gamepad setting this client has, with its value, into the saved
         -- variables file (WTF\Account\<account>\SavedVariables\TenKsUltimateARPGCamera.lua) after /reload.

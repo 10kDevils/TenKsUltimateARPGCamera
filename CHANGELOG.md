@@ -2,6 +2,9 @@
 
 Versioning: the third digit counts meaningful changes since the second digit last went up (bumped automatically). The first two digits change only with explicit permission.
 
+## 1.3.5
+- New `/acam padtest` (about a minute, controller active): for each of 19 trials (baseline; GamePadTurnWithCamera 0/1; GamePadFaceMovementMaxAngle 180; ...Combat 0; GamePadCameraLookMaxYaw 90 / Pitch 45; cameraSmoothTrackingStyle 0; cameraSmoothStyle 1/2; GamePadCursorAutoEnable 0; GamePadCursorForTargeting 0; GamePadOverlapMouseMs 0; GamePadAnalogMovement 0; GamePadSingleActiveID 0; CameraReduceUnexpectedMovement 0; SetGamePadFreeLook true/false; GamePadEnable 0) it changes that one setting, waits 1.2 s, switches CameraKeepCharacterCentered off and watches it for 2.5 s, counting how often the game forces it back on; then restores the setting. Settings this client lacks are skipped. The guard pauses during the test. Results go to chat and `padTest` in the saved variables.
+
 ## 1.3.4
 - In-game result of 1.3.3 on the Steam Deck: `CameraKeepCharacterCentered` was put back 785 times; the game re-forces it continuously while gamepad mode is active, so it can't be won by re-writing. The guard now treats a setting taken back 5 times within 30 s as locked: it only retries every 30 s (no per-second fight / flicker), prints a one-time "locked" message, and `/acam debug` shows the total, "locked by the game" and who changed it.
 - New diagnostics: `SetCVar` and `C_CVar.SetCVar` are post-hooked (hooksecurefunc); when a setting the addon controls is changed by other Lua code, the first 5 call stacks are saved as `cvarWho[setting]` in the saved variables. Nothing recorded while it keeps flipping = the game engine does it (not fixable from an addon).
