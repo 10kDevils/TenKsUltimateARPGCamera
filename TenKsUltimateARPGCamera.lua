@@ -24,7 +24,7 @@ local L = setmetatable({}, { __index = function(_, key)
 end })
 
 -- Version information and release notes.
-local Meta = { version = "1.3.6" }
+local Meta = { version = "1.3.7" }
 do
     local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
     if get then
@@ -33,6 +33,7 @@ do
     end
 end
 Meta.notes = {
+    "Field of view goes from 50 to 90 again, the same range as the game's slider, and the view now always matches the slider: speed and crowd widening add on top instead of narrowing the resting view",
     "The addon now also switches off \"Reduce unexpected camera movement\", which (since patch 11.0.2) cancels the shoulder offset. /acam shoulder checks everything the shoulder offset depends on",
     "/acam padtest: with a controller, finds which gamepad or camera setting makes the game keep the character centered",
     "When the game locks a camera setting (gamepad mode on WoW Forever keeps the character centered), the addon stops fighting it every second, so nothing flickers. /acam debug shows what is locked and who changed it",
@@ -748,7 +749,7 @@ local zoomGlide               -- { goal, pos } while the camera is gliding to a 
 local function Target(key)
     local v = Cur(key)
     if v == nil then v = PROFILE_KEY_DEFAULTS[key] or 0 end
-    if key == "fov" then v = math.max(50, math.min(85, v)) end
+    if key == "fov" then v = math.max(50, math.min(90, v)) end
     return v
 end
 
@@ -982,8 +983,7 @@ end
 -- Two optional extras on top of a situation's field of view. Speed widens it
 -- as you move faster (full effect at mounted speed); crowd widens it when
 -- several enemies are fighting you. Both are smoothed, and the extra is
--- capped at 85 degrees: if base + extras would pass 85, the resting view is
--- narrowed to leave room, so the full effect always has somewhere to go.
+-- capped at 90 degrees, the game's own maximum. The resting view always matches the slider.
 local DynFov = { speed = 0, crowd = 0, enemies = 0, yps = 0 }
 do
 local crowdAt = -100
@@ -1073,10 +1073,10 @@ local function StepBlend(dt)
     local fs, cf = shown.fovSpeed or 0, shown.crowdFov or 0
     if fs > 0.05 or cf > 0.05 then
         DynFov.step(dt, fs > 0.05, cf > 0.05)
-        local room = math.max(0, fov + fs + cf - 85)
-        fov = fov - room + fs * DynFov.speed + cf * DynFov.crowd
+        -- the resting view is exactly what the slider says; the extras widen it up to the game's 90
+        fov = fov + fs * DynFov.speed + cf * DynFov.crowd
     end
-    Put(CV.fov, math.max(50, math.min(85, fov)), 0.05, "%.1f")
+    Put(CV.fov, math.max(50, math.min(90, fov)), 0.05, "%.1f")
     VigApply(shown.vigAlpha, shown.vigRange or 0.3, shown.vigCurve or 2)
     LbApply(shown.lbSize)
 
@@ -2538,7 +2538,7 @@ local PROFILE_FIELDS = {
     lbSize = "number", fovSpeed = "number", crowdFov = "number",
 }
 local RANGES = {
-    fov = { 50, 85 }, zoom = { 1, 3.5 }, shoulder = { -10, 10 }, headMove = { 0, 1 }, yaw = { 0, 1 },
+    fov = { 50, 90 }, zoom = { 1, 3.5 }, shoulder = { -10, 10 }, headMove = { 0, 1 }, yaw = { 0, 1 },
     pitch = { 0, 1 }, tilt = { -20, 20 }, blend = { 0.2, 5 }, zoomDist = { 1, 40 }, blendTime = { 0.2, 5 },
     rampTime = { 0.1, 2 }, smooth = { 0.2, 1 }, shoulderComp = { -1.5, 1.5 }, fxSize = { 40, 300 },
     fxOffset = { -100, 100 }, fxSpeed = { -180, 180 }, fxAlpha = { 0.2, 1 }, fxCurve = { 0, 1 },
@@ -2707,19 +2707,19 @@ local cinematic = {
 local tactical = {
     world      = { fov = 80, shoulder = 1.5, headMove = 0.3, tilt = 3, yaw = 0.3, pitch = 0.2, blend = 0.8,
                    vigRange = 0.25 },
-    indoors    = { fov = 85, shoulder = 0, headMove = 0, yaw = 0.15, pitch = 0.05, zoom = 2.5, blend = 0.6,
+    indoors    = { fov = 90, shoulder = 0, headMove = 0, yaw = 0.15, pitch = 0.05, zoom = 2.5, blend = 0.6,
                    vigAlpha = 0.12, vigRange = 0.2, vigCurve = 3 },
-    combat     = { fov = 85, shoulder = 0, headMove = 0, yaw = 0.06, pitch = 0, blend = 0.35, zoomDist = 15,
+    combat     = { fov = 90, shoulder = 0, headMove = 0, yaw = 0.06, pitch = 0, blend = 0.35, zoomDist = 15,
                    vigAlpha = 0.2, vigRange = 0.16, vigCurve = 3.5 },
-    swimming   = { fov = 85, shoulder = 0, headMove = 0, yaw = 0.15, pitch = 0.1, zoom = 3, blend = 0.6 },
-    city       = { fov = 85, shoulder = 1.5, headMove = 0.2, tilt = 2, yaw = 0.15, pitch = 0.1, blend = 0.8 },
+    swimming   = { fov = 90, shoulder = 0, headMove = 0, yaw = 0.15, pitch = 0.1, zoom = 3, blend = 0.6 },
+    city       = { fov = 90, shoulder = 1.5, headMove = 0.2, tilt = 2, yaw = 0.15, pitch = 0.1, blend = 0.8 },
     npc        = { fov = 72, shoulder = 0, headMove = 0, yaw = 0.5, pitch = 0.35, zoom = 2, zoomSet = true,
                    zoomRemember = false, zoomDist = 5, blend = 0.5, vigAlpha = 0.1, vigRange = 0.2, vigCurve = 3 },
-    instance   = { fov = 85, shoulder = 0, headMove = 0, yaw = 0.06, pitch = 0, blend = 0.35,
+    instance   = { fov = 90, shoulder = 0, headMove = 0, yaw = 0.06, pitch = 0, blend = 0.35,
                    vigAlpha = 0.16, vigRange = 0.16, vigCurve = 3.5 },
 }
 -- Controller: cinematic action, wide for a TV across the room or a handheld's small screen (the game caps the
--- field of view at 85), strong auto-focus so the right stick is rarely needed, snappy combat.
+-- field of view at 90), strong auto-focus so the right stick is rarely needed, snappy combat.
 local controller = {
     world      = { fov = 70, shoulder = 2.6, headMove = 0.4, tilt = 5, yaw = 0.35, pitch = 0.3, zoom = 3, zoomSet = true,
                    zoomRemember = false, zoomDist = 10, blend = 1.6, vigAlpha = 0.12, vigCurve = 2.4, fovSpeed = 5 },
@@ -3425,7 +3425,7 @@ local function BuildPanel()
     local function PS(label, key, lo, hi, step, y)
         profileWidgets[#profileWidgets + 1] = MakeSlider(S, label, key, lo, hi, step, c1, y, false, EP)
     end
-    PS("Field of view", "fov", 50, 85, 1, -198)
+    PS("Field of view", "fov", 50, 90, 1, -198)
     PS("Over-the-shoulder", "shoulder", -10, 10, 0.1, -243)
     PS("Max zoom factor", "zoom", 1, 3.5, 0.1, -288)
     PS("Head movement", "headMove", 0, 1, 0.05, -333)
@@ -3476,7 +3476,7 @@ local function BuildPanel()
     fovNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1, -560)
     fovNote:SetWidth(CW)
     fovNote:SetJustifyH("LEFT")
-    fovNote:SetText(L["Priority: Dungeon/Raid, Combat, Talk, Swimming, Indoors, City, then Exploration. Field of view works from 50 to 85; speed and crowd widening leave room by narrowing the resting view if needed."])
+    fovNote:SetText(L["Priority: Dungeon/Raid, Combat, Talk, Swimming, Indoors, City, then Exploration. Field of view: 50 to 90, the same range as the game's own slider. Speed and crowd widening add to it, up to 90."])
 
     panel.ShowBlend = ShowBlend
 
@@ -4063,7 +4063,7 @@ local function Help()
     print("  shoulder <-10..10>      over-the-shoulder offset")
     print("  shouldercomp [-1.5..1.5]  toggle, or set the strength of, keeping the character in place on screen as you zoom (0 = off, 1 = full, negative exaggerates the drift)")
     print("  camtilt <-20..20>     camera tilt offset of the base profile, degrees (+ = up)")
-    print("  fov <50-85>           field of view of the base (exploration) profile")
+    print("  fov <50-90>           field of view of the base (exploration) profile")
     print("  profile               show the active situation profile and every profile's values")
     print("  zoom <1-3.5>          max zoom factor")
     print("  head <0-1>            head-movement sway")
@@ -4287,7 +4287,7 @@ SlashCmdList["ACAM"] = function(msg)
     elseif cmd == "camtilt" and n then
         db.profiles.world.tilt = math.max(-20, math.min(20, n)); Refresh()
     elseif cmd == "fov" and n then
-        db.profiles.world.fov = math.max(50, math.min(85, n)); Refresh()
+        db.profiles.world.fov = math.max(50, math.min(90, n)); Refresh()
     elseif cmd == "profile" then
         local parts = {}
         for _, name in ipairs(PROFILES) do
@@ -4451,7 +4451,7 @@ events:SetScript("OnEvent", function(self, event, arg1)
         end
         db.pulseOn, db.pulseStrength, db.pulseZoom, db.pulseVignette, db.pulseV2 = nil, nil, nil, nil, nil
         for _, name in ipairs(PROFILES) do
-            P[name].fov = math.max(50, math.min(85, P[name].fov))
+            P[name].fov = math.max(50, math.min(90, P[name].fov))
         end
 
         self:UnregisterEvent("ADDON_LOADED")

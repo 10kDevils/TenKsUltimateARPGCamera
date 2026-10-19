@@ -2,6 +2,9 @@
 
 Versioning: the third digit counts meaningful changes since the second digit last went up (bumped automatically). The first two digits change only with explicit permission.
 
+## 1.3.7
+- **Field of view fixed: 50–90 again, matching the game's own slider end to end.** The "FOV caps at 85" (1.2.0) and "stops at 80" reports were the addon's own doing: with speed / crowd widening on, the resting view was narrowed by the widening amount to "leave room" under the cap (90 - 5 = 85, later 85 - 5 = 80). Now the resting view is exactly the slider value and the widening adds on top, clipped at 90. Slider, `/acam fov`, saved settings, imports and the profile key range are 50–90. Tactical's wide views are back at 90.
+
 ## 1.3.6
 - Over-the-shoulder reported not working at all (no gamepad). The addon now also manages `CameraReduceUnexpectedMovement` (sets 0 while on, original saved and restored like the other camera settings): since patch 11.0.2 it cancels `test_cameraOverShoulder` just like Keep Character Centered. Settings added in later versions are now filled into the saved originals on the next load.
 - New `/acam shoulder`: shows Keep Character Centered, Reduce Unexpected Camera Movement, the shoulder offset written vs wanted, gamepad state, and any settings the game keeps changing back.
