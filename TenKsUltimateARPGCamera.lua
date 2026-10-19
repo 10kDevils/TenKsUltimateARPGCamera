@@ -24,7 +24,7 @@ local L = setmetatable({}, { __index = function(_, key)
 end })
 
 -- Version information and release notes.
-local Meta = { version = "1.3.5" }
+local Meta = { version = "1.3.6" }
 do
     local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
     if get then
@@ -33,6 +33,7 @@ do
     end
 end
 Meta.notes = {
+    "The addon now also switches off \"Reduce unexpected camera movement\", which (since patch 11.0.2) cancels the shoulder offset. /acam shoulder checks everything the shoulder offset depends on",
     "/acam padtest: with a controller, finds which gamepad or camera setting makes the game keep the character centered",
     "When the game locks a camera setting (gamepad mode on WoW Forever keeps the character centered), the addon stops fighting it every second, so nothing flickers. /acam debug shows what is locked and who changed it",
     "Fixed: with a controller the game turned \"Keep character centered\" back on, which cancelled the shoulder offset and most of the camera. The addon now puts any camera setting the game changes back within a second",
@@ -126,6 +127,8 @@ local CV = {
     -- Since patch 9.0.1 the ActionCam features are mostly ignored while the
     -- character is kept centered on screen, so this must be off.
     keepCentered   = "CameraKeepCharacterCentered",
+    -- Since patch 11.0.2 "Reduce unexpected camera movement" also switches the shoulder offset off.
+    reduceMove     = "CameraReduceUnexpectedMovement",
 }
 
 -- Engine default turn speeds (degrees/second) that the smoothing slider scales.
@@ -361,10 +364,11 @@ local function ForgetWrites()
 end
 
 local function SaveOriginals()
-    if db.orig then return end -- already saved; cleared again by RestoreOriginals
-    db.orig = {}
+    -- saved once (cleared again by RestoreOriginals); settings added in later versions are filled in
+    db.orig = db.orig or {}
     for _, name in pairs(CV) do
-        local v = getCVar(name)
+        if db.orig[name] ~= nil then name = nil end
+        local v = name and getCVar(name)
         if v ~= nil then db.orig[name] = v end
     end
 end
@@ -1185,6 +1189,7 @@ end
 local function ApplyStatic()
     if not db.enabled then return end
     SetC(CV.keepCentered, 0)
+    SetC(CV.reduceMove, 0)
     SetC(CV.dynamicPitch, db.dynamicPitch)
     SetC(CV.terrainTilt, db.terrainTilt)
     SetC(CV.bobbing, db.bobbing)
@@ -4050,6 +4055,7 @@ local function Help()
     print("  framealpha <0.2-1>  framecurve <0-1>  frameshift <-40..40>   opacity / curvature / distance shift")
     print("  frametest             draw the frame at the screen center to check it draws at all")
     print("  framestyle            cycle the style: reticle, ground ring, solid triangles, outline")
+    print("  shoulder              check everything that decides whether the shoulder offset can work")
     print("  padtest               with a controller: find which setting makes the game keep the character centered")
     print("  cvars [label]         save every camera and gamepad setting the game has into the addon's saved file (for troubleshooting)")
     print("  npcs                  switch focusing of all friendly targets (NPCs, players, group, pets, critters) on or off together")
@@ -4127,6 +4133,19 @@ SlashCmdList["ACAM"] = function(msg)
             end
         end
         if InCombatLockdown and InCombatLockdown() then print("  (in combat: changes wait until combat ends)") end
+    elseif cmd == "shoulder" then
+        -- everything that decides whether the shoulder offset can work
+        local function cv(n) local ok, v = pcall(getCVar, n) return ok and tostring(v) or "?" end
+        Print(L["Shoulder offset check:"])
+        local kc, rm = cv("CameraKeepCharacterCentered"), cv("CameraReduceUnexpectedMovement")
+        print(string.format("  Keep character centered: %s %s", kc, kc == "0" and "(ok)" or "|cffff6060(ON: the game ignores the shoulder offset)|r"))
+        print(string.format("  Reduce unexpected camera movement: %s %s", rm, (rm == "0" or rm == "?") and "(ok)" or "|cffff6060(ON: the game ignores the shoulder offset)|r"))
+        print(string.format("  shoulder offset written: %s (the situation wants %.2f)", cv("test_cameraOverShoulder"), Cur("shoulder") or 0))
+        local on, why = Detect.gamepad()
+        print(string.format("  gamepad: %s (%s)  addon on: %s", tostring(on), tostring(why), tostring(db.enabled)))
+        for name, f in pairs(Detect.guardFixes or {}) do
+            print(string.format("  the game changed %s back %d times%s", name, f.total or f.n, f.locked and " (locked)" or ""))
+        end
     elseif cmd == "why" then
         Print(L["Situation checks right now (the one marked > is in use):"])
         for _, r in ipairs(Detect.explain()) do

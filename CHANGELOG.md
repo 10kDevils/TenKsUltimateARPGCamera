@@ -2,6 +2,10 @@
 
 Versioning: the third digit counts meaningful changes since the second digit last went up (bumped automatically). The first two digits change only with explicit permission.
 
+## 1.3.6
+- Over-the-shoulder reported not working at all (no gamepad). The addon now also manages `CameraReduceUnexpectedMovement` (sets 0 while on, original saved and restored like the other camera settings): since patch 11.0.2 it cancels `test_cameraOverShoulder` just like Keep Character Centered. Settings added in later versions are now filled into the saved originals on the next load.
+- New `/acam shoulder`: shows Keep Character Centered, Reduce Unexpected Camera Movement, the shoulder offset written vs wanted, gamepad state, and any settings the game keeps changing back.
+
 ## 1.3.5
 - New `/acam padtest` (about a minute, controller active): for each of 19 trials (baseline; GamePadTurnWithCamera 0/1; GamePadFaceMovementMaxAngle 180; ...Combat 0; GamePadCameraLookMaxYaw 90 / Pitch 45; cameraSmoothTrackingStyle 0; cameraSmoothStyle 1/2; GamePadCursorAutoEnable 0; GamePadCursorForTargeting 0; GamePadOverlapMouseMs 0; GamePadAnalogMovement 0; GamePadSingleActiveID 0; CameraReduceUnexpectedMovement 0; SetGamePadFreeLook true/false; GamePadEnable 0) it changes that one setting, waits 1.2 s, switches CameraKeepCharacterCentered off and watches it for 2.5 s, counting how often the game forces it back on; then restores the setting. Settings this client lacks are skipped. The guard pauses during the test. Results go to chat and `padTest` in the saved variables.
 
