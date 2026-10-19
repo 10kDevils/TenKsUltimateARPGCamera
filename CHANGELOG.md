@@ -2,6 +2,9 @@
 
 Versioning: the third digit counts meaningful changes since the second digit last went up (bumped automatically). The first two digits change only with explicit permission.
 
+## 1.3.8
+- **Smoother automatic field of view (widen with speed / many enemies).** The stutter came from three things: the extra was recalculated only 20 times a second while standing still or moving steadily (10 in low-CPU mode), the value was written in 0.1° steps (visible as ratcheting on a large widening), and a single quick exponential follow made every start, stop or enemy-count change show as a kink. Now the extras ease in two soft stages (quicker widening out, gentler settling back) with a smoothstep shape, are updated every frame (every other frame in low-CPU mode), and written in 0.01° steps. Resting view and the 50–90 range are unchanged.
+
 ## 1.3.7
 - **Field of view fixed: 50–90 again, matching the game's own slider end to end.** The "FOV caps at 85" (1.2.0) and "stops at 80" reports were the addon's own doing: with speed / crowd widening on, the resting view was narrowed by the widening amount to "leave room" under the cap (90 - 5 = 85, later 85 - 5 = 80). Now the resting view is exactly the slider value and the widening adds on top, clipped at 90. Slider, `/acam fov`, saved settings, imports and the profile key range are 50–90. Tactical's wide views are back at 90.
 

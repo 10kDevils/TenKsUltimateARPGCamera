@@ -24,7 +24,7 @@ local L = setmetatable({}, { __index = function(_, key)
 end })
 
 -- Version information and release notes.
-local Meta = { version = "1.3.7" }
+local Meta = { version = "1.3.8" }
 do
     local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
     if get then
@@ -33,6 +33,7 @@ do
     end
 end
 Meta.notes = {
+    "Smoother speed and crowd field of view: the widening now eases in and out in two soft stages and is updated every frame in tiny steps, instead of in small jumps 20 times a second",
     "Field of view goes from 50 to 90 again, the same range as the game's slider, and the view now always matches the slider: speed and crowd widening add on top instead of narrowing the resting view",
     "The addon now also switches off \"Reduce unexpected camera movement\", which (since patch 11.0.2) cancels the shoulder offset. /acam shoulder checks everything the shoulder offset depends on",
     "/acam padtest: with a controller, finds which gamepad or camera setting makes the game keep the character centered",
@@ -1016,11 +1017,21 @@ function DynFov.step(dt, wantSpeed, wantCrowd)
     else
         DynFov.enemies = 0
     end
-    local ks, kc = 1 - math.exp(-dt * 2.5), 1 - math.exp(-dt * 1.2)
-    DynFov.speed = DynFov.speed + (goalS - DynFov.speed) * ks
-    DynFov.crowd = DynFov.crowd + (goalC - DynFov.crowd) * kc
-    if DynFov.speed < 0.002 then DynFov.speed = 0 end
-    if DynFov.crowd < 0.002 then DynFov.crowd = 0 end
+    -- two stages of easing (a soft, critically-damped-like follow) so starts, stops and enemy count changes never
+    -- show as steps; the wide-out is quicker than the settle-back, and the result is shaped with a smoothstep
+    DynFov.aS, DynFov.aC = DynFov.aS or 0, DynFov.aC or 0
+    DynFov.bS, DynFov.bC = DynFov.bS or 0, DynFov.bC or 0
+    local k1s = 1 - math.exp(-dt * (goalS > DynFov.aS and 1.6 or 0.7))
+    local k1c = 1 - math.exp(-dt * (goalC > DynFov.aC and 0.9 or 0.5))
+    DynFov.aS = DynFov.aS + (goalS - DynFov.aS) * k1s
+    DynFov.aC = DynFov.aC + (goalC - DynFov.aC) * k1c
+    local k2s, k2c = 1 - math.exp(-dt * 3), 1 - math.exp(-dt * 2)
+    DynFov.bS = DynFov.bS + (DynFov.aS - DynFov.bS) * k2s
+    DynFov.bC = DynFov.bC + (DynFov.aC - DynFov.bC) * k2c
+    if DynFov.bS < 0.001 and goalS == 0 then DynFov.aS, DynFov.bS = 0, 0 end
+    if DynFov.bC < 0.001 and goalC == 0 then DynFov.aC, DynFov.bC = 0, 0 end
+    DynFov.speed = DynFov.bS * DynFov.bS * (3 - 2 * DynFov.bS)
+    DynFov.crowd = DynFov.bC * DynFov.bC * (3 - 2 * DynFov.bC)
 end
 end
 
@@ -1054,7 +1065,19 @@ do
         if ApplyRamp then ApplyRamp() end
     end)
 end
-local function StepBlend(dt)
+-- field of view: the slider value plus the eased speed / crowd extras, written in fine steps (0.01 degree)
+-- every frame while the extras are moving, so there is nothing for the eye to catch
+function Detect.stepFov(dt)
+    local fov = shown.fov
+    local fs, cf = shown.fovSpeed or 0, shown.crowdFov or 0
+    if fs > 0.05 or cf > 0.05 then
+        DynFov.step(dt, fs > 0.05, cf > 0.05)
+        -- the resting view is exactly what the slider says; the extras widen it up to the game's 90
+        fov = fov + fs * DynFov.speed + cf * DynFov.crowd
+    end
+    Put(CV.fov, math.max(50, math.min(90, fov)), 0.01, "%.2f")
+end
+local function StepBlend(dt, skipFov)
     if not db or not db.enabled then return end
     StepShown(dt)
     Detect.stepTalkFocus(dt)
@@ -1068,15 +1091,7 @@ local function StepBlend(dt)
         calmWas = calm and true or nil
     end
 
-    -- field of view
-    local fov = shown.fov
-    local fs, cf = shown.fovSpeed or 0, shown.crowdFov or 0
-    if fs > 0.05 or cf > 0.05 then
-        DynFov.step(dt, fs > 0.05, cf > 0.05)
-        -- the resting view is exactly what the slider says; the extras widen it up to the game's 90
-        fov = fov + fs * DynFov.speed + cf * DynFov.crowd
-    end
-    Put(CV.fov, math.max(50, math.min(90, fov)), 0.05, "%.1f")
+    if not skipFov then Detect.stepFov(dt) end
     VigApply(shown.vigAlpha, shown.vigRange or 0.3, shown.vigCurve or 2)
     LbApply(shown.lbSize)
 
@@ -2354,8 +2369,16 @@ fxDriver:SetScript("OnUpdate", function(self, elapsed)
         -- settled: only the speed / crowd field-of-view extras need a quick pace; otherwise a slow check is plenty
         tm.idle = tm.idle + elapsed
         local dyn = shown and ((shown.fovSpeed or 0) > 0.05 or (shown.crowdFov or 0) > 0.05)
-        if tm.idle >= (dyn and (lazy and 0.1 or 0.05) or 0.2) then
-            StepBlend(tm.idle)
+        if dyn then
+            -- the field of view extras are stepped every frame (every other frame in low-CPU mode)
+            tm.fovT = (tm.fovT or 0) + elapsed
+            if tm.fovT >= (lazy and 0.033 or 0) then
+                Detect.stepFov(tm.fovT)
+                tm.fovT = 0
+            end
+        end
+        if tm.idle >= 0.2 then
+            StepBlend(tm.idle, dyn)
             StepTilt(tm.idle)
             tm.idle = 0
         end
