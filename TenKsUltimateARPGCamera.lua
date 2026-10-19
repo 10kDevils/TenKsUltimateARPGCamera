@@ -24,7 +24,7 @@ local L = setmetatable({}, { __index = function(_, key)
 end })
 
 -- Version information and release notes.
-local Meta = { version = "1.3.3" }
+local Meta = { version = "1.3.4" }
 do
     local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
     if get then
@@ -33,6 +33,7 @@ do
     end
 end
 Meta.notes = {
+    "When the game locks a camera setting (gamepad mode on WoW Forever keeps the character centered), the addon stops fighting it every second, so nothing flickers. /acam debug shows what is locked and who changed it",
     "Fixed: with a controller the game turned \"Keep character centered\" back on, which cancelled the shoulder offset and most of the camera. The addon now puts any camera setting the game changes back within a second",
     "/acam cvars saves every camera and gamepad setting into the addon's saved file, for troubleshooting",
     "New Halo targeting frame (now the default): a ring that drains with your target's health, pulses while it casts, and marks elites",
@@ -390,24 +391,52 @@ do
         if x and y then return math.abs(x - y) > 0.005 end
         return tostring(a) ~= tostring(b)
     end
+    -- A setting the game takes back again and again is locked by the game (WoW Forever's gamepad mode
+    -- does this to "Keep character centered"). Fighting it every second only causes flicker, so after
+    -- 5 take-backs in 30 seconds the addon only tries again every 30 seconds.
     function Detect.guard()
         if not (db and db.enabled) then return end
         local now = GetTime and GetTime() or 0
         for name, text in pairs(written) do
-            local ok, cur = pcall(getCVar, name)
-            if ok and cur ~= nil and not issecret(cur) and differs(cur, text) then
-                pcall(setCVar, name, text)
-                local f = fixes[name] or { n = 0, since = now }
-                if now - f.since > 30 then f.n, f.since = 0, now end
-                f.n = f.n + 1
-                f.last, f.from = now, tostring(cur)
-                fixes[name] = f
-                if f.n >= 5 and not warned[name] then
-                    warned[name] = true
-                    Print(string.format(L["The game keeps changing %s back to %s; the addon keeps setting it again. Check the game's camera and accessibility options."], name, tostring(cur)))
+            local f = fixes[name]
+            if not (f and f.locked and now - f.last < 30) then
+                local ok, cur = pcall(getCVar, name)
+                if ok and cur ~= nil and not issecret(cur) and differs(cur, text) then
+                    Detect.guardWriting = true
+                    pcall(setCVar, name, text)
+                    Detect.guardWriting = nil
+                    f = f or { n = 0, total = 0, since = now }
+                    if now - f.since > 30 then f.n, f.since = 0, now end
+                    f.n, f.total = f.n + 1, f.total + 1
+                    f.last, f.from = now, tostring(cur)
+                    f.locked = f.n >= 5 or nil
+                    fixes[name] = f
+                    if f.locked and not warned[name] then
+                        warned[name] = true
+                        Print(string.format(L["The game keeps switching %s back to %s, so this setting is locked while it does. /acam debug has details."], name, tostring(cur)))
+                    end
                 end
             end
         end
+    end
+
+    -- Who changes it? Records the Lua call stack (if a Lua file does it) the first few times a setting the
+    -- addon controls is changed by someone else, into the saved file as cvarWho. If nothing is ever recorded
+    -- while the setting keeps flipping, the game engine itself is doing it.
+    local function Watch(name, value)
+        if Detect.guardWriting or type(name) ~= "string" or written[name] == nil then return end
+        if not differs(value, written[name]) then return end
+        db.cvarWho = db.cvarWho or {}
+        local list = db.cvarWho[name] or {}
+        db.cvarWho[name] = list
+        if #list < 5 then
+            list[#list + 1] = { value = tostring(value), when = date and date("%H:%M:%S") or "",
+                stack = debugstack and debugstack(3, 8, 0) or "?" }
+        end
+    end
+    if hooksecurefunc then
+        if SetCVar then pcall(hooksecurefunc, "SetCVar", Watch) end
+        if C_CVar and C_CVar.SetCVar then pcall(hooksecurefunc, C_CVar, "SetCVar", Watch) end
     end
     Detect.guardFixes = fixes
     local g = CreateFrame("Frame") -- the regular check runs from the main update loop below
@@ -4052,7 +4081,10 @@ SlashCmdList["ACAM"] = function(msg)
         end
         print(string.format("  combatOnly=%s yaw=%.2f pitch=%.2f", tostring(db.combatOnly), Cur("yaw"), Cur("pitch")))
         for name, f in pairs(Detect.guardFixes or {}) do
-            print(string.format("  put back %s %d times (game had set it to %s)", name, f.n, tostring(f.from)))
+            print(string.format("  put back %s %d times (game had set it to %s)%s", name, f.total or f.n, tostring(f.from),
+                f.locked and " - locked by the game, retrying every 30 s" or ""))
+            local who = db.cvarWho and db.cvarWho[name]
+            print("    changed by: " .. (who and who[1] and ((who[1].stack or ""):match("[^\n]+") or "?") or "the game itself (no addon or UI code)"))
         end
         print(string.format("  game focus blend=%.2f (goal %d)", ramp, rampGoal))
         print(string.format("  dynamic fov: speed %.1f yd/s (level %.2f), %d enemies fighting you (level %.2f) | letterbox %.3f | gamepad %s",
