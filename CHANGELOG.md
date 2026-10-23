@@ -2,6 +2,9 @@
 
 Versioning: the third digit counts meaningful changes since the second digit last went up (bumped automatically). The first two digits change only with explicit permission.
 
+## 1.3.9
+- **Over the shoulder unified across situations, and ordered across presets.** Within a preset the offset used to swing widely (Controller 1.6–3, Cinematic 1.2–2.2, Tactical 0–1.5, Default 0.5–1.5). Every situation of a preset now uses one value, and from least to most: Comfort 0.3 (a slight offset), Tactical 0.7, Default 1.0, Controller 1.6, Cinematic 2.2. Saved settings are untouched until a preset is applied again.
+
 ## 1.3.8
 - **Smoother automatic field of view (widen with speed / many enemies).** The stutter came from three things: the extra was recalculated only 20 times a second while standing still or moving steadily (10 in low-CPU mode), the value was written in 0.1° steps (visible as ratcheting on a large widening), and a single quick exponential follow made every start, stop or enemy-count change show as a kink. Now the extras ease in two soft stages (quicker widening out, gentler settling back) with a smoothstep shape, are updated every frame (every other frame in low-CPU mode), and written in 0.01° steps. Resting view and the 50–90 range are unchanged.
 

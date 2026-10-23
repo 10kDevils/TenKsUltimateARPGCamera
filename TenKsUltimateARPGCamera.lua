@@ -24,7 +24,7 @@ local L = setmetatable({}, { __index = function(_, key)
 end })
 
 -- Version information and release notes.
-local Meta = { version = "1.3.8" }
+local Meta = { version = "1.3.9" }
 do
     local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
     if get then
@@ -33,6 +33,7 @@ do
     end
 end
 Meta.notes = {
+    "Over the shoulder is now even across each preset's situations, and the presets are ordered from least to most: Comfort (0.3), Tactical (0.7), Default (1.0), Controller (1.6), Cinematic (2.2). Pick a preset again to get the new values",
     "Smoother speed and crowd field of view: the widening now eases in and out in two soft stages and is updated every frame in tiny steps, instead of in small jumps 20 times a second",
     "Field of view goes from 50 to 90 again, the same range as the game's slider, and the view now always matches the slider: speed and crowd widening add on top instead of narrowing the resting view",
     "The addon now also switches off \"Reduce unexpected camera movement\", which (since patch 11.0.2) cancels the shoulder offset. /acam shoulder checks everything the shoulder offset depends on",
@@ -2655,10 +2656,10 @@ local FACTORY_SITUATIONS = {
                    vigAlpha = 0.3, vigRange = 0.28, vigCurve = 2.2, crowdFov = 8 },
     indoors    = { fov = 70, headMove = 0.4, yaw = 0.5, pitch = 0.5, zoom = 1.5, blend = 1, zoomRemember = false,
                    zoomSet = true, zoomDist = 5, vigAlpha = 0.35 },
-    swimming   = { tilt = 3, fov = 80, shoulder = 0.5, headMove = 0.6, zoom = 2.5, blend = 2,
+    swimming   = { tilt = 3, fov = 80, headMove = 0.6, zoom = 2.5, blend = 2,
                    vigAlpha = 0.25, vigRange = 0.35 },
     city       = { tilt = 6, fov = 85, headMove = 0.5, yaw = 0.15, pitch = 0.15, zoom = 3, blend = 3 },
-    npc        = { fov = 58, shoulder = 1.5, headMove = 0.3, yaw = 0.7, pitch = 0.7, zoom = 1.5, blend = 1.2,
+    npc        = { fov = 58, headMove = 0.3, yaw = 0.7, pitch = 0.7, zoom = 1.5, blend = 1.2,
                    zoomRemember = false, zoomSet = true, zoomDist = 4, vigAlpha = 0.25, vigRange = 0.35, lbSize = 0.05 },
     instance   = { tilt = 2, fov = 84, headMove = 0.2, yaw = 0.3, pitch = 0.25, blend = 1.2,
                    vigAlpha = 0.22, vigRange = 0.26, vigCurve = 2.2 },
@@ -2711,60 +2712,60 @@ local top = {
     },
 }
 local cinematic = {
-    world      = { fov = 74, shoulder = 1.8, headMove = 1, tilt = 8, yaw = 0.25, pitch = 0.2, blend = 2.4,
+    world      = { shoulder = 2.2, fov = 74, headMove = 1, tilt = 8, yaw = 0.25, pitch = 0.2, blend = 2.4,
                    vigAlpha = 0.15, vigCurve = 2.4, fovSpeed = 6 },
-    indoors    = { fov = 60, headMove = 0.6, tilt = -3, yaw = 0.45, pitch = 0.45, zoom = 1, zoomSet = true,
+    indoors    = { shoulder = 2.2, fov = 60, headMove = 0.6, tilt = -3, yaw = 0.45, pitch = 0.45, zoom = 1, zoomSet = true,
                    zoomRemember = false, zoomDist = 4.5, blend = 2.8, vigAlpha = 0.26, vigCurve = 2.6 },
-    combat     = { fov = 62, shoulder = 2.2, headMove = 0.5, tilt = 5, yaw = 0.45, pitch = 0.45, zoom = 2.2,
+    combat     = { shoulder = 2.2, fov = 62, headMove = 0.5, tilt = 5, yaw = 0.45, pitch = 0.45, zoom = 2.2,
                    zoomSet = true, zoomRemember = false, zoomDist = 8, blend = 1.1,
                    vigAlpha = 0.22, vigRange = 0.24, vigCurve = 3, crowdFov = 6 },
-    swimming   = { fov = 66, shoulder = 1.5, headMove = 1, tilt = 2, yaw = 0.25, pitch = 0.2, zoom = 3, blend = 2.8,
+    swimming   = { shoulder = 2.2, fov = 66, headMove = 1, tilt = 2, yaw = 0.25, pitch = 0.2, zoom = 3, blend = 2.8,
                    vigAlpha = 0.22, vigRange = 0.32, vigCurve = 2.4 },
-    city       = { fov = 70, shoulder = 1.8, headMove = 0.8, tilt = 6, yaw = 0.2, pitch = 0.15, blend = 3,
+    city       = { shoulder = 2.2, fov = 70, headMove = 0.8, tilt = 6, yaw = 0.2, pitch = 0.15, blend = 3,
                    vigAlpha = 0.1, vigCurve = 2.4, fovSpeed = 4 },
-    npc        = { fov = 50, shoulder = 1.4, headMove = 0.3, yaw = 0.7, pitch = 0.7, zoom = 1.2, zoomSet = true,
+    npc        = { shoulder = 2.2, fov = 50, headMove = 0.3, yaw = 0.7, pitch = 0.7, zoom = 1.2, zoomSet = true,
                    zoomRemember = false, zoomDist = 3.2, blend = 2, vigAlpha = 0.28, vigCurve = 2.6, lbSize = 0.09 },
-    instance   = { fov = 72, shoulder = 1.2, headMove = 0.5, tilt = 4, yaw = 0.3, pitch = 0.25, zoom = 3, blend = 1.6,
+    instance   = { shoulder = 2.2, fov = 72, headMove = 0.5, tilt = 4, yaw = 0.3, pitch = 0.25, zoom = 3, blend = 1.6,
                    vigAlpha = 0.2, vigCurve = 2.4 },
 }
 local tactical = {
-    world      = { fov = 80, shoulder = 1.5, headMove = 0.3, tilt = 3, yaw = 0.3, pitch = 0.2, blend = 0.8,
+    world      = { shoulder = 0.7, fov = 80, headMove = 0.3, tilt = 3, yaw = 0.3, pitch = 0.2, blend = 0.8,
                    vigRange = 0.25 },
-    indoors    = { fov = 90, shoulder = 0, headMove = 0, yaw = 0.15, pitch = 0.05, zoom = 2.5, blend = 0.6,
+    indoors    = { shoulder = 0.7, fov = 90, headMove = 0, yaw = 0.15, pitch = 0.05, zoom = 2.5, blend = 0.6,
                    vigAlpha = 0.12, vigRange = 0.2, vigCurve = 3 },
-    combat     = { fov = 90, shoulder = 0, headMove = 0, yaw = 0.06, pitch = 0, blend = 0.35, zoomDist = 15,
+    combat     = { shoulder = 0.7, fov = 90, headMove = 0, yaw = 0.06, pitch = 0, blend = 0.35, zoomDist = 15,
                    vigAlpha = 0.2, vigRange = 0.16, vigCurve = 3.5 },
-    swimming   = { fov = 90, shoulder = 0, headMove = 0, yaw = 0.15, pitch = 0.1, zoom = 3, blend = 0.6 },
-    city       = { fov = 90, shoulder = 1.5, headMove = 0.2, tilt = 2, yaw = 0.15, pitch = 0.1, blend = 0.8 },
-    npc        = { fov = 72, shoulder = 0, headMove = 0, yaw = 0.5, pitch = 0.35, zoom = 2, zoomSet = true,
+    swimming   = { shoulder = 0.7, fov = 90, headMove = 0, yaw = 0.15, pitch = 0.1, zoom = 3, blend = 0.6 },
+    city       = { shoulder = 0.7, fov = 90, headMove = 0.2, tilt = 2, yaw = 0.15, pitch = 0.1, blend = 0.8 },
+    npc        = { shoulder = 0.7, fov = 72, headMove = 0, yaw = 0.5, pitch = 0.35, zoom = 2, zoomSet = true,
                    zoomRemember = false, zoomDist = 5, blend = 0.5, vigAlpha = 0.1, vigRange = 0.2, vigCurve = 3 },
-    instance   = { fov = 90, shoulder = 0, headMove = 0, yaw = 0.06, pitch = 0, blend = 0.35,
+    instance   = { shoulder = 0.7, fov = 90, headMove = 0, yaw = 0.06, pitch = 0, blend = 0.35,
                    vigAlpha = 0.16, vigRange = 0.16, vigCurve = 3.5 },
 }
 -- Controller: cinematic action, wide for a TV across the room or a handheld's small screen (the game caps the
 -- field of view at 90), strong auto-focus so the right stick is rarely needed, snappy combat.
 local controller = {
-    world      = { fov = 70, shoulder = 2.6, headMove = 0.4, tilt = 5, yaw = 0.35, pitch = 0.3, zoom = 3, zoomSet = true,
+    world      = { shoulder = 1.6, fov = 70, headMove = 0.4, tilt = 5, yaw = 0.35, pitch = 0.3, zoom = 3, zoomSet = true,
                    zoomRemember = false, zoomDist = 10, blend = 1.6, vigAlpha = 0.12, vigCurve = 2.4, fovSpeed = 5 },
-    indoors    = { fov = 70, shoulder = 2.2, headMove = 0.3, tilt = 0, yaw = 0.5, pitch = 0.5, zoom = 1.6, zoomSet = true,
+    indoors    = { shoulder = 1.6, fov = 70, headMove = 0.3, tilt = 0, yaw = 0.5, pitch = 0.5, zoom = 1.6, zoomSet = true,
                    zoomRemember = false, zoomDist = 5, blend = 1, vigAlpha = 0.25, vigCurve = 2.6 },
-    combat     = { fov = 74, shoulder = 3, headMove = 0.2, tilt = 4, yaw = 0.55, pitch = 0.45, zoom = 2.6,
+    combat     = { shoulder = 1.6, fov = 74, headMove = 0.2, tilt = 4, yaw = 0.55, pitch = 0.45, zoom = 2.6,
                    zoomSet = true, zoomRemember = false, zoomDist = 8, blend = 0.6,
                    vigAlpha = 0.25, vigRange = 0.26, vigCurve = 3, fovSpeed = 4, crowdFov = 8 },
-    swimming   = { fov = 72, shoulder = 2, headMove = 0.5, tilt = 2, yaw = 0.3, pitch = 0.25, zoom = 3, zoomSet = true,
+    swimming   = { shoulder = 1.6, fov = 72, headMove = 0.5, tilt = 2, yaw = 0.3, pitch = 0.25, zoom = 3, zoomSet = true,
                    zoomRemember = false, zoomDist = 10, blend = 2, vigAlpha = 0.2, vigRange = 0.32, vigCurve = 2.4 },
-    city       = { fov = 70, shoulder = 2.4, headMove = 0.4, tilt = 5, yaw = 0.25, pitch = 0.2, zoom = 3, zoomSet = true,
+    city       = { shoulder = 1.6, fov = 70, headMove = 0.4, tilt = 5, yaw = 0.25, pitch = 0.2, zoom = 3, zoomSet = true,
                    zoomRemember = false, zoomDist = 10, blend = 2.5, vigAlpha = 0.1, vigCurve = 2.4, fovSpeed = 4 },
-    npc        = { fov = 54, shoulder = 1.6, headMove = 0.2, yaw = 0.7, pitch = 0.7, zoom = 1.3, zoomSet = true,
+    npc        = { shoulder = 1.6, fov = 54, headMove = 0.2, yaw = 0.7, pitch = 0.7, zoom = 1.3, zoomSet = true,
                    zoomRemember = false, zoomDist = 3.5, blend = 1.2, vigAlpha = 0.28, vigCurve = 2.6, lbSize = 0.06 },
-    instance   = { fov = 74, shoulder = 2.8, headMove = 0.2, tilt = 4, yaw = 0.5, pitch = 0.4, zoom = 3, zoomSet = true,
+    instance   = { shoulder = 1.6, fov = 74, headMove = 0.2, tilt = 4, yaw = 0.5, pitch = 0.4, zoom = 3, zoomSet = true,
                    zoomRemember = false, zoomDist = 10, blend = 0.7,
                    vigAlpha = 0.24, vigRange = 0.24, vigCurve = 3, fovSpeed = 4, crowdFov = 8 },
 }
 -- Comfort: the same steady view everywhere; only the world profile is in use.
 local comfort = {}
 for _, name in ipairs(PROFILES) do
-    comfort[name] = { on = false, fov = 85, shoulder = 1, headMove = 0, tilt = 0, yaw = 0.12, pitch = 0.08,
+    comfort[name] = { on = false, fov = 85, shoulder = 0.3, headMove = 0, tilt = 0, yaw = 0.12, pitch = 0.08,
                       blend = 1.8, vigAlpha = 0.12, vigRange = 0.3, vigCurve = 2 }
 end
 comfort.world.on = nil
