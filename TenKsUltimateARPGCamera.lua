@@ -24,7 +24,7 @@ local L = setmetatable({}, { __index = function(_, key)
 end })
 
 -- Version information and release notes.
-local Meta = { version = "1.3.10" }
+local Meta = { version = "1.3.11" }
 do
     local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
     if get then
@@ -33,6 +33,9 @@ do
     end
 end
 Meta.notes = {
+    "New under Situations > More: head tracking (strength, standing, moving, reaction speed) per situation, tuned for action in combat; zoom rules (exact, in only, out only, range); and, in Talk, fading the rest of the interface while a window is open",
+    "New on the General tab: smooth, accelerating mouse-wheel zoom",
+    "Presets now look further ahead: the camera tilts up more in exploration, cities, swimming, dungeons and combat",
     "Shoulder compensation is now set per situation: tick \"Compensate for zoom\" under Over-the-shoulder and press Edit curve to shape how the offset changes with camera distance (drag points, click to add, right-click to remove). \"Use this one curve for all situations\" shares one curve. The old Camera framing controls on the General tab are gone; your old setting became a curve",
     "Over the shoulder is now even across each preset's situations, and the presets are ordered from least to most: Comfort (0.3), Tactical (0.7), Default (1.0), Controller (1.6), Cinematic (2.2). Pick a preset again to get the new values",
     "Smoother speed and crowd field of view: the widening now eases in and out in two soft stages and is updated every frame in tiny steps, instead of in small jumps 20 times a second",
@@ -95,6 +98,16 @@ local DEFAULTS = {
     terrainTilt = true,
     bobbing = true,     -- camera bob while moving
     shoulder = 1,        -- over-the-shoulder offset; positive = right, negative = left
+    -- smooth mouse-wheel zoom (reactive zoom)
+    rzOn = false,        -- bigger, quicker, accelerating wheel steps
+    rzStep = 3,          -- yards per wheel notch
+    rzSpeed = 40,        -- how fast the camera moves to the new distance (yards per second)
+    -- Talk: fade the rest of the interface while a dialogue or vendor window is open
+    talkFade = false,
+    talkFadeAlpha = 0,   -- how visible the rest of the interface stays (0 = gone)
+    talkKeepChat = true,
+    talkKeepMinimap = false,
+    talkKeepFrames = "", -- more frames to leave alone, by name, separated by commas
     shCompShare = false, -- one shoulder compensation curve shared by every situation
     shCompCurve = "0:1,50:1", -- the shared curve: "camera distance:multiplier" points
     zoom = 3.5,          -- max zoom factor (this client accepts up to 3.5)
@@ -121,6 +134,11 @@ local CV = {
     dynamicPitch   = "test_cameraDynamicPitch",
     shoulder       = "test_cameraOverShoulder",
     headMove       = "test_cameraHeadMovementStrength",
+    headStand      = "test_cameraHeadMovementStandingStrength",
+    headMoving     = "test_cameraHeadMovementMovingStrength",
+    headStandRate  = "test_cameraHeadMovementStandingDampRate",
+    headMoveRate   = "test_cameraHeadMovementMovingDampRate",
+    zoomSpeed      = "cameraZoomSpeed",
     zoom           = "cameraDistanceMaxZoomFactor",
     fov            = "cameraFov",
     terrainTilt    = "cameraTerrainTilt",
@@ -188,8 +206,9 @@ local PROFILE_INFO = { -- short button label, and what the situation means
     instance   = { L["Dungeon"],  L["Inside a dungeon, raid or scenario. Wins over Combat there, so the whole run keeps one steady camera."] },
 }
 local PROFILE_KEYS = { "fov", "shoulder", "zoom", "headMove", "yaw", "pitch", "tilt", "vigAlpha", "vigRange", "vigCurve",
-    "lbSize", "fovSpeed", "crowdFov" }
-local PROFILE_KEY_DEFAULTS = { vigAlpha = 0, vigRange = 0.3, vigCurve = 2, lbSize = 0, fovSpeed = 0, crowdFov = 0 }
+    "lbSize", "fovSpeed", "crowdFov", "headStand", "headMoving", "headReact" }
+local PROFILE_KEY_DEFAULTS = { vigAlpha = 0, vigRange = 0.3, vigCurve = 2, lbSize = 0, fovSpeed = 0, crowdFov = 0,
+    headStand = 0.3, headMoving = 0.5, headReact = 10 } -- the last three are the game's own values
 local activeProfile = "world"
 local editProfile = "world" -- the one shown in the settings window
 
@@ -849,6 +868,122 @@ function Comp.current()
 end
 end
 
+-- Smooth mouse-wheel zoom ---------------------------------------------------
+-- The game moves the camera one yard per wheel notch. With this on, a notch moves `rzStep` yards, notches in
+-- quick succession move further (up to 3x), and the camera is allowed to travel at `rzSpeed` yards per second, so
+-- zooming feels immediate instead of crawling. Only wheel-sized calls (an increment of exactly 1) are changed;
+-- the addon's own glides use the original functions.
+do
+local Rz = { notches = {}, installed = false }
+Detect.rz = Rz
+Rz.rawIn, Rz.rawOut = CameraZoomIn, CameraZoomOut
+local function Wrap(raw)
+    return function(inc, ...)
+        if inc == 1 and db and db.enabled and db.rzOn then
+            local now = GetTime()
+            local list = Rz.notches
+            list[#list + 1] = now
+            while list[1] and now - list[1] > 0.3 do table.remove(list, 1) end
+            inc = (db.rzStep or 3) * (1 + math.min(2, (#list - 1) * 0.4))
+        end
+        return raw(inc, ...)
+    end
+end
+-- Puts the wrappers in (or takes them out) to match the settings; call after any change.
+function Rz.sync()
+    local want = db and db.enabled and db.rzOn and Rz.rawIn and Rz.rawOut and true or false
+    if want and not Rz.installed then
+        Rz.wrapIn, Rz.wrapOut = Wrap(Rz.rawIn), Wrap(Rz.rawOut)
+        CameraZoomIn, CameraZoomOut = Rz.wrapIn, Rz.wrapOut
+        Rz.installed = true
+    elseif not want and Rz.installed then
+        if CameraZoomIn == Rz.wrapIn then CameraZoomIn = Rz.rawIn end -- someone else may have wrapped it since: leave theirs
+        if CameraZoomOut == Rz.wrapOut then CameraZoomOut = Rz.rawOut end
+        Rz.installed = false
+    end
+    if want then
+        SetC(CV.zoomSpeed, string.format("%.0f", db.rzSpeed or 40))
+    elseif db and db.enabled and db.orig and db.orig[CV.zoomSpeed] ~= nil then
+        SetC(CV.zoomSpeed, db.orig[CV.zoomSpeed])
+    end
+end
+end
+
+-- Talk: fade the rest of the interface ------------------------------------------
+-- While a dialogue or vendor window is open in the Talk situation, everything on screen except the windows you
+-- are using fades out. The windows (and bags, popups, tooltips, and chat / minimap if wanted) are told to ignore
+-- their parent's transparency, then the whole interface fades. It all goes back the moment the window closes.
+do
+local F = { t = 0, saved = nil, held = {}, scan = 0, closeAt = -10, prevOpen = false }
+Detect.fade = F
+local KEEP = { "GossipFrame", "QuestFrame", "MerchantFrame", "ClassTrainerFrame", "BankFrame", "AuctionHouseFrame",
+    "PetStableFrame", "ItemTextFrame", "TabardFrame", "GuildRegistrarFrame", "PetitionFrame", "TaxiFrame", "MailFrame",
+    "StaticPopup1", "StaticPopup2", "StaticPopup3", "StaticPopup4", "GameTooltip", "ItemRefTooltip", "ShoppingTooltip1",
+    "ShoppingTooltip2", "UIErrorsFrame", "ContainerFrameCombinedBags", "TenKsARPGCameraPanel", "TenKsARPGCameraCurve" }
+for i = 1, 13 do KEEP[#KEEP + 1] = "ContainerFrame" .. i end
+local function Keepers()
+    local list = {}
+    for _, n in ipairs(KEEP) do list[#list + 1] = n end
+    if db.talkKeepChat ~= false then
+        list[#list + 1] = "GeneralDockManager"
+        for i = 1, 10 do
+            list[#list + 1] = "ChatFrame" .. i
+            list[#list + 1] = "ChatFrame" .. i .. "Tab"
+            list[#list + 1] = "ChatFrame" .. i .. "EditBox"
+        end
+        list[#list + 1] = "ChatFrameMenuButton"
+        list[#list + 1] = "ChatFrameChannelButton"
+    end
+    if db.talkKeepMinimap then list[#list + 1] = "MinimapCluster" end
+    for name in tostring(db.talkKeepFrames or ""):gmatch("[^,%s]+") do list[#list + 1] = name end
+    return list
+end
+-- Frames that exist now and are not yet ignoring the fade.
+local function Hold()
+    for _, name in ipairs(Keepers()) do
+        local f = _G[name]
+        if type(f) == "table" and f.SetIgnoreParentAlpha and F.held[f] == nil then
+            local ok, was = pcall(f.IsIgnoringParentAlpha or function() return false end, f)
+            F.held[f] = ok and was and true or false
+            pcall(f.SetIgnoreParentAlpha, f, true)
+        end
+    end
+end
+local function Release()
+    for f, was in pairs(F.held) do pcall(f.SetIgnoreParentAlpha, f, was) end
+    wipe(F.held)
+    if F.saved then pcall(UIParent.SetAlpha, UIParent, F.saved) end
+    F.saved = nil
+    F.t = 0
+end
+function F.reset() if F.saved or F.t > 0 then Release() end end
+function F.wanted()
+    if not (db and db.enabled and db.talkFade and activeProfile == "npc") then return false end
+    local now = GetTime()
+    local open = Detect.npc() and true or false
+    if open or F.prevOpen then F.closeAt = now end
+    F.prevOpen = open
+    return open or now - F.closeAt < 0.6 -- a short grace so one window opening after another does not flash the interface
+end
+function F.step(dt)
+    local want = F.wanted()
+    if not want and F.t == 0 then return end
+    if want and not F.saved then
+        local ok, a = pcall(UIParent.GetAlpha, UIParent)
+        F.saved = (ok and type(a) == "number") and a or 1
+        Hold()
+    end
+    F.t = want and math.min(1, F.t + dt / 0.3) or math.max(0, F.t - dt / 0.5)
+    F.scan = F.scan + dt
+    if F.scan >= 0.25 then F.scan = 0; if F.saved then Hold() end end
+    if F.saved then
+        local to = math.max(0, math.min(1, db.talkFadeAlpha or 0))
+        pcall(UIParent.SetAlpha, UIParent, F.saved * (1 - (1 - to) * Ease(F.t)))
+    end
+    if F.t <= 0 and not want then Release() end
+end
+end
+
 local function BeginTransition(oldName, newName)
     for _, k in ipairs(PROFILE_KEYS) do from[k] = shown[k] end
     local dur = db.blendTime or 1.2
@@ -908,12 +1043,13 @@ local ApplyRamp -- defined below
 local function StepZoomGlide(dt)
     local g = zoomGlide
     if not g then return end
-    if not (CameraZoomIn and CameraZoomOut) then zoomGlide = nil return end
+    local zin, zout = Detect.rz.rawIn or CameraZoomIn, Detect.rz.rawOut or CameraZoomOut
+    if not (zin and zout) then zoomGlide = nil return end
     local rate = 3 / math.max(0.4, trans and trans.dur or (db.blendTime or 1.2))
     local nextPos = g.pos + (g.goal - g.pos) * (1 - math.exp(-dt * rate))
     local delta = nextPos - g.pos
     if math.abs(delta) > 0.004 then
-        pcall(delta < 0 and CameraZoomIn or CameraZoomOut, math.abs(delta))
+        pcall(delta < 0 and zin or zout, math.abs(delta))
         g.pos = nextPos
     end
     if math.abs(g.goal - g.pos) < 0.05 then zoomGlide = nil end
@@ -1193,6 +1329,10 @@ local function StepBlend(dt, skipFov, skipSh)
     if not skipSh then Detect.stepShoulder(dt) end
 
     Put(CV.headMove, shown.headMove, 0.004, "%.2f")
+    Put(CV.headStand, shown.headStand or 0.3, 0.004, "%.2f")
+    Put(CV.headMoving, shown.headMoving or 0.5, 0.004, "%.2f")
+    Put(CV.headStandRate, shown.headReact or 10, 0.05, "%.1f")
+    Put(CV.headMoveRate, shown.headReact or 10, 0.05, "%.1f")
 
     -- max zoom factor. While the camera is still gliding in, hold the factor at
     -- what it needs so the game doesn't snap it to the new limit mid-glide.
@@ -1274,19 +1414,29 @@ local function ConstrainZoom(restore)
 
     local base = BaseDist()
     local limit = base * Cur("zoom")
+    local pr = db.profiles[activeProfile]
+    -- zoom rules (with "use a set zoom distance"): exactly there, only closer, only farther, or inside a range
+    local kind = (pr and pr.zoomSet and pr.zoomKind) or 0
+    local zlo, zhi = (pr and pr.zoomMin) or 5, (pr and pr.zoomMax) or 20
+    if zlo > zhi then zlo, zhi = zhi, zlo end
     local target = cur
     if restore then
-        local pr = db.profiles[activeProfile]
         if pr and pr.zoomSet then
-            target = pr.zoomDist or cur                      -- a fixed distance for this profile
+            local want = pr.zoomDist or cur
+            if kind == 1 then target = math.min(cur, want)           -- only zoom in
+            elseif kind == 2 then target = math.max(cur, want)       -- only zoom out
+            elseif kind == 3 then target = math.max(zlo, math.min(zhi, cur)) -- within a range
+            else target = want end                                   -- a fixed distance for this profile
         elseif zoomMemory[activeProfile] and not (pr and pr.zoomRemember == false) then
             target = zoomMemory[activeProfile]               -- the zoom you last used here
         end
+    elseif kind == 3 then
+        target = math.max(zlo, math.min(zhi, cur))           -- the range also holds while you zoom
     end
     target = math.min(target, limit)
 
     local d = target - cur
-    if (d < -0.05) or (d > 0.05 and restore) then
+    if (d < -0.05) or (d > 0.05 and (restore or kind == 3)) then
         lastConstrain = now
         zoomGlide = { goal = target, pos = cur }
     end
@@ -1304,6 +1454,7 @@ local function ApplyStatic()
     SetC(CV.yawSmooth, string.format("%.0f", BASE_YAW_SPEED * db.smooth))
     SetC(CV.pitchSmooth, string.format("%.0f", BASE_PITCH_SPEED * db.smooth))
     if db.followStyle ~= nil then SetC(CV.followStyle, db.followStyle) end
+    Detect.rz.sync()
 end
 
 ApplyRamp = function()
@@ -1401,7 +1552,9 @@ local function Disable()
     zoomMemory = {}
     VigHide()
     LbHide()
+    Detect.fade.reset()
     RestoreOriginals()
+    Detect.rz.sync()
     NP.restore()
 end
 
@@ -2484,6 +2637,8 @@ fxDriver:SetScript("OnUpdate", function(self, elapsed)
         end
     end
 
+    Detect.fade.step(elapsed) -- Talk: fades the rest of the interface while a window is open
+
     -- settings the game may have changed back
     tm.guard = (tm.guard or 0) + elapsed
     if Detect.guardSoon or tm.guard >= (lazy and 2 or 1) then
@@ -2619,7 +2774,7 @@ local function MakeSlider(parent, label, key, minV, maxV, step, cx, y, noRefresh
         local t = tblFn and tblFn() or db
         t[key] = value
         Show(value)
-        if key == "zoomDist" and ConstrainZoom and editProfile == activeProfile then ConstrainZoom(true) end
+        if (key == "zoomDist" or key == "zoomMin" or key == "zoomMax") and ConstrainZoom and editProfile == activeProfile then ConstrainZoom(true) end
         if key == "menuAlpha" and panel then panel:SetBackgroundOpacity(value) end
         if not noRefresh then Refresh() end
     end)
@@ -2651,7 +2806,7 @@ local SNAPSHOT_SKIP = {
     shoulder = true, zoom = true, headMove = true, yaw = true, pitch = true,
     activePreset = true, lowCpu = true, npOrig = true, npInit = true, npManage = true, npEnemies = true, npEnemyMinor = true,
     npEnemyPets = true, npEnemyTotems = true, npFriendlyPlayers = true, npFriendlyNpcs = true,
-    npFriendlyPets = true, npFriendlyTotems = true, -- nameplates are a personal screen preference, not part of a preset
+    npFriendlyPets = true, npFriendlyTotems = true, rzOn = true, rzStep = true, rzSpeed = true, talkKeepFrames = true, -- nameplates are a personal screen preference, not part of a preset
 }
 local PROFILE_FIELDS = {
     on = "boolean", tilt = "number", fov = "number", shoulder = "number", zoom = "number",
@@ -2660,6 +2815,8 @@ local PROFILE_FIELDS = {
     vigAlpha = "number", vigRange = "number", vigCurve = "number",
     lbSize = "number", fovSpeed = "number", crowdFov = "number",
     shComp = "boolean", shCurve = "string",
+    headStand = "number", headMoving = "number", headReact = "number",
+    zoomKind = "number", zoomMin = "number", zoomMax = "number",
 }
 local RANGES = {
     fov = { 50, 90 }, zoom = { 1, 3.5 }, shoulder = { -10, 10 }, headMove = { 0, 1 }, yaw = { 0, 1 },
@@ -2667,6 +2824,8 @@ local RANGES = {
     rampTime = { 0.1, 2 }, smooth = { 0.2, 1 }, fxSize = { 40, 300 },
     fxOffset = { -100, 100 }, fxSpeed = { -180, 180 }, fxAlpha = { 0.2, 1 }, fxCurve = { 0, 1 },
     fxDistShift = { -40, 40 }, fxGlow = { 0, 1 },
+    headStand = { 0, 1 }, headMoving = { 0, 1 }, headReact = { 1, 20 }, zoomKind = { 0, 3 }, zoomMin = { 1, 40 }, zoomMax = { 1, 40 },
+    rzStep = { 0.5, 8 }, rzSpeed = { 10, 80 }, talkFadeAlpha = { 0, 1 },
     vigAlpha = { 0, 1 }, vigRange = { 0.05, 0.5 }, vigCurve = { 0.5, 4 },
     lbSize = { 0, 0.15 }, fovSpeed = { 0, 20 }, crowdFov = { 0, 20 }, fxOocAlpha = { 0, 1 }, fxFriendScale = { 0.4, 1 },
 }
@@ -2742,6 +2901,7 @@ local PROFILE_BASE = {
     blend = 1.5, zoomRemember = true, zoomSet = false, zoomDist = 10,
     vigAlpha = 0, vigRange = 0.3, vigCurve = 2, lbSize = 0, fovSpeed = 0, crowdFov = 0,
     shComp = false, shCurve = "0:1,50:1",
+    headStand = 0.3, headMoving = 0.5, headReact = 10, zoomKind = 0, zoomMin = 5, zoomMax = 20,
 }
 
 -- Turns { top-level settings, per-situation tables } into a flat snapshot-style table.
@@ -2756,17 +2916,17 @@ end
 
 -- The factory situations (the "Default" look).
 local FACTORY_SITUATIONS = {
-    world      = { tilt = 10, headMove = 0.75, blend = 3.5 },
-    combat     = { tilt = 4, fov = 80, headMove = 0, yaw = 0.4, pitch = 0.35, zoom = 3, blend = 1, zoomDist = 15,
+    world      = { tilt = 14, headMove = 0.75, blend = 3.5 },
+    combat     = { headReact = 12, headStand = 0.2, headMoving = 0.85, tilt = 8, fov = 80, headMove = 0.8, yaw = 0.4, pitch = 0.35, zoom = 3, blend = 1, zoomDist = 15,
                    vigAlpha = 0.3, vigRange = 0.28, vigCurve = 2.2, crowdFov = 8 },
-    indoors    = { fov = 70, headMove = 0.4, yaw = 0.5, pitch = 0.5, zoom = 1.5, blend = 1, zoomRemember = false,
+    indoors    = { tilt = 2, fov = 70, headMove = 0.4, yaw = 0.5, pitch = 0.5, zoom = 1.5, blend = 1, zoomRemember = false,
                    zoomSet = true, zoomDist = 5, vigAlpha = 0.35 },
-    swimming   = { tilt = 3, fov = 80, headMove = 0.6, zoom = 2.5, blend = 2,
+    swimming   = { tilt = 6, fov = 80, headMove = 0.6, zoom = 2.5, blend = 2,
                    vigAlpha = 0.25, vigRange = 0.35 },
-    city       = { tilt = 6, fov = 85, headMove = 0.5, yaw = 0.15, pitch = 0.15, zoom = 3, blend = 3 },
+    city       = { tilt = 10, fov = 85, headMove = 0.5, yaw = 0.15, pitch = 0.15, zoom = 3, blend = 3 },
     npc        = { fov = 58, headMove = 0.3, yaw = 0.7, pitch = 0.7, zoom = 1.5, blend = 1.2,
                    zoomRemember = false, zoomSet = true, zoomDist = 4, vigAlpha = 0.25, vigRange = 0.35, lbSize = 0.05 },
-    instance   = { tilt = 2, fov = 84, headMove = 0.2, yaw = 0.3, pitch = 0.25, blend = 1.2,
+    instance   = { tilt = 6, fov = 84, headMove = 0.2, yaw = 0.3, pitch = 0.25, blend = 1.2,
                    vigAlpha = 0.22, vigRange = 0.26, vigCurve = 2.2 },
 }
 
@@ -2796,7 +2956,7 @@ end
 local top = {
     Cinematic = {
         smooth = 0.4, rampTime = 0.6, blendAll = false, slowExit = true, blendTime = 2.4,
-        bobbing = true, terrainTilt = true, dynamicPitch = true, shCompShare = true, shCompCurve = Detect.comp.fromPower(0.4),
+        bobbing = true, terrainTilt = true, dynamicPitch = true, shCompShare = true, shCompCurve = Detect.comp.fromPower(0.4), talkFade = true, talkFadeAlpha = 0,
         fxSize = 210, fxGlow = 0.9, fxAlpha = 0.8, fxSpeed = 6, fxLock = true, fxHit = true,
     },
     Tactical = {
@@ -2817,53 +2977,53 @@ local top = {
     },
 }
 local cinematic = {
-    world      = { shoulder = 2.2, fov = 74, headMove = 1, tilt = 8, yaw = 0.25, pitch = 0.2, blend = 2.4,
+    world      = { shoulder = 2.2, fov = 74, headMove = 1, tilt = 12, yaw = 0.25, pitch = 0.2, blend = 2.4,
                    vigAlpha = 0.15, vigCurve = 2.4, fovSpeed = 6 },
-    indoors    = { shoulder = 2.2, fov = 60, headMove = 0.6, tilt = -3, yaw = 0.45, pitch = 0.45, zoom = 1, zoomSet = true,
+    indoors    = { shoulder = 2.2, fov = 60, headMove = 0.6, tilt = 0, yaw = 0.45, pitch = 0.45, zoom = 1, zoomSet = true,
                    zoomRemember = false, zoomDist = 4.5, blend = 2.8, vigAlpha = 0.26, vigCurve = 2.6 },
-    combat     = { shoulder = 2.2, fov = 62, headMove = 0.5, tilt = 5, yaw = 0.45, pitch = 0.45, zoom = 2.2,
+    combat     = { headReact = 9, headStand = 0.25, headMoving = 0.9, shoulder = 2.2, fov = 62, headMove = 0.9, tilt = 9, yaw = 0.45, pitch = 0.45, zoom = 2.2,
                    zoomSet = true, zoomRemember = false, zoomDist = 8, blend = 1.1,
                    vigAlpha = 0.22, vigRange = 0.24, vigCurve = 3, crowdFov = 6 },
-    swimming   = { shoulder = 2.2, fov = 66, headMove = 1, tilt = 2, yaw = 0.25, pitch = 0.2, zoom = 3, blend = 2.8,
+    swimming   = { shoulder = 2.2, fov = 66, headMove = 1, tilt = 5, yaw = 0.25, pitch = 0.2, zoom = 3, blend = 2.8,
                    vigAlpha = 0.22, vigRange = 0.32, vigCurve = 2.4 },
-    city       = { shoulder = 2.2, fov = 70, headMove = 0.8, tilt = 6, yaw = 0.2, pitch = 0.15, blend = 3,
+    city       = { shoulder = 2.2, fov = 70, headMove = 0.8, tilt = 10, yaw = 0.2, pitch = 0.15, blend = 3,
                    vigAlpha = 0.1, vigCurve = 2.4, fovSpeed = 4 },
     npc        = { shoulder = 2.2, fov = 50, headMove = 0.3, yaw = 0.7, pitch = 0.7, zoom = 1.2, zoomSet = true,
                    zoomRemember = false, zoomDist = 3.2, blend = 2, vigAlpha = 0.28, vigCurve = 2.6, lbSize = 0.09 },
-    instance   = { shoulder = 2.2, fov = 72, headMove = 0.5, tilt = 4, yaw = 0.3, pitch = 0.25, zoom = 3, blend = 1.6,
+    instance   = { shoulder = 2.2, fov = 72, headMove = 0.5, tilt = 8, yaw = 0.3, pitch = 0.25, zoom = 3, blend = 1.6,
                    vigAlpha = 0.2, vigCurve = 2.4 },
 }
 local tactical = {
-    world      = { shoulder = 0.7, fov = 80, headMove = 0.3, tilt = 3, yaw = 0.3, pitch = 0.2, blend = 0.8,
+    world      = { shoulder = 0.7, fov = 80, headMove = 0.3, tilt = 6, yaw = 0.3, pitch = 0.2, blend = 0.8,
                    vigRange = 0.25 },
-    indoors    = { shoulder = 0.7, fov = 90, headMove = 0, yaw = 0.15, pitch = 0.05, zoom = 2.5, blend = 0.6,
+    indoors    = { tilt = 0, shoulder = 0.7, fov = 90, headMove = 0, yaw = 0.15, pitch = 0.05, zoom = 2.5, blend = 0.6,
                    vigAlpha = 0.12, vigRange = 0.2, vigCurve = 3 },
-    combat     = { shoulder = 0.7, fov = 90, headMove = 0, yaw = 0.06, pitch = 0, blend = 0.35, zoomDist = 15,
+    combat     = { tilt = 3, shoulder = 0.7, fov = 90, headMove = 0, yaw = 0.06, pitch = 0, blend = 0.35, zoomDist = 15,
                    vigAlpha = 0.2, vigRange = 0.16, vigCurve = 3.5 },
-    swimming   = { shoulder = 0.7, fov = 90, headMove = 0, yaw = 0.15, pitch = 0.1, zoom = 3, blend = 0.6 },
-    city       = { shoulder = 0.7, fov = 90, headMove = 0.2, tilt = 2, yaw = 0.15, pitch = 0.1, blend = 0.8 },
+    swimming   = { tilt = 2, shoulder = 0.7, fov = 90, headMove = 0, yaw = 0.15, pitch = 0.1, zoom = 3, blend = 0.6 },
+    city       = { shoulder = 0.7, fov = 90, headMove = 0.2, tilt = 5, yaw = 0.15, pitch = 0.1, blend = 0.8 },
     npc        = { shoulder = 0.7, fov = 72, headMove = 0, yaw = 0.5, pitch = 0.35, zoom = 2, zoomSet = true,
                    zoomRemember = false, zoomDist = 5, blend = 0.5, vigAlpha = 0.1, vigRange = 0.2, vigCurve = 3 },
-    instance   = { shoulder = 0.7, fov = 90, headMove = 0, yaw = 0.06, pitch = 0, blend = 0.35,
+    instance   = { tilt = 3, shoulder = 0.7, fov = 90, headMove = 0, yaw = 0.06, pitch = 0, blend = 0.35,
                    vigAlpha = 0.16, vigRange = 0.16, vigCurve = 3.5 },
 }
 -- Controller: cinematic action, wide for a TV across the room or a handheld's small screen (the game caps the
 -- field of view at 90), strong auto-focus so the right stick is rarely needed, snappy combat.
 local controller = {
-    world      = { shoulder = 1.6, fov = 70, headMove = 0.4, tilt = 5, yaw = 0.35, pitch = 0.3, zoom = 3, zoomSet = true,
+    world      = { shoulder = 1.6, fov = 70, headMove = 0.4, tilt = 9, yaw = 0.35, pitch = 0.3, zoom = 3, zoomSet = true,
                    zoomRemember = false, zoomDist = 10, blend = 1.6, vigAlpha = 0.12, vigCurve = 2.4, fovSpeed = 5 },
-    indoors    = { shoulder = 1.6, fov = 70, headMove = 0.3, tilt = 0, yaw = 0.5, pitch = 0.5, zoom = 1.6, zoomSet = true,
+    indoors    = { shoulder = 1.6, fov = 70, headMove = 0.3, tilt = 2, yaw = 0.5, pitch = 0.5, zoom = 1.6, zoomSet = true,
                    zoomRemember = false, zoomDist = 5, blend = 1, vigAlpha = 0.25, vigCurve = 2.6 },
-    combat     = { shoulder = 1.6, fov = 74, headMove = 0.2, tilt = 4, yaw = 0.55, pitch = 0.45, zoom = 2.6,
+    combat     = { headReact = 14, headStand = 0.15, headMoving = 0.9, shoulder = 1.6, fov = 74, headMove = 0.7, tilt = 8, yaw = 0.55, pitch = 0.45, zoom = 2.6,
                    zoomSet = true, zoomRemember = false, zoomDist = 8, blend = 0.6,
                    vigAlpha = 0.25, vigRange = 0.26, vigCurve = 3, fovSpeed = 4, crowdFov = 8 },
-    swimming   = { shoulder = 1.6, fov = 72, headMove = 0.5, tilt = 2, yaw = 0.3, pitch = 0.25, zoom = 3, zoomSet = true,
+    swimming   = { shoulder = 1.6, fov = 72, headMove = 0.5, tilt = 5, yaw = 0.3, pitch = 0.25, zoom = 3, zoomSet = true,
                    zoomRemember = false, zoomDist = 10, blend = 2, vigAlpha = 0.2, vigRange = 0.32, vigCurve = 2.4 },
-    city       = { shoulder = 1.6, fov = 70, headMove = 0.4, tilt = 5, yaw = 0.25, pitch = 0.2, zoom = 3, zoomSet = true,
+    city       = { shoulder = 1.6, fov = 70, headMove = 0.4, tilt = 9, yaw = 0.25, pitch = 0.2, zoom = 3, zoomSet = true,
                    zoomRemember = false, zoomDist = 10, blend = 2.5, vigAlpha = 0.1, vigCurve = 2.4, fovSpeed = 4 },
     npc        = { shoulder = 1.6, fov = 54, headMove = 0.2, yaw = 0.7, pitch = 0.7, zoom = 1.3, zoomSet = true,
                    zoomRemember = false, zoomDist = 3.5, blend = 1.2, vigAlpha = 0.28, vigCurve = 2.6, lbSize = 0.06 },
-    instance   = { shoulder = 1.6, fov = 74, headMove = 0.2, tilt = 4, yaw = 0.5, pitch = 0.4, zoom = 3, zoomSet = true,
+    instance   = { shoulder = 1.6, fov = 74, headMove = 0.2, tilt = 8, yaw = 0.5, pitch = 0.4, zoom = 3, zoomSet = true,
                    zoomRemember = false, zoomDist = 10, blend = 0.7,
                    vigAlpha = 0.24, vigRange = 0.24, vigCurve = 3, fovSpeed = 4, crowdFov = 8 },
 }
@@ -2876,7 +3036,7 @@ end
 -- Comfort: the same steady view everywhere; only the world profile is in use.
 local comfort = {}
 for _, name in ipairs(PROFILES) do
-    comfort[name] = { on = false, fov = 85, shoulder = 0.3, headMove = 0, tilt = 0, yaw = 0.12, pitch = 0.08,
+    comfort[name] = { on = false, fov = 85, shoulder = 0.3, headMove = 0, tilt = 4, yaw = 0.12, pitch = 0.08,
                       blend = 1.8, vigAlpha = 0.12, vigRange = 0.3, vigCurve = 2 }
 end
 comfort.world.on = nil
@@ -3290,6 +3450,12 @@ local function BuildPanel()
     local lowCb = MakeCheck(G, "Battery saver (lighter updates)", "lowCpu", COL1, -428, function() end)
     Tip(lowCb, "Battery saver (lighter updates)", "Checks situations and updates the targeting frame less often. Saves a little CPU and battery on a handheld; the camera may react a fraction of a second later and the frame animates a little less smoothly.")
 
+    Header(G, "Mouse-wheel zoom", COL1, -470)
+    local rzCb = MakeCheck(G, "Smooth, accelerating wheel zoom", "rzOn", COL1, -492)
+    Tip(rzCb, "Smooth, accelerating wheel zoom", "Each wheel notch moves the camera a set distance instead of one yard, and turning the wheel quickly moves it further. The camera also travels faster. Turn it off to get the game's own zoom back.")
+    MakeSlider(G, "Yards per wheel notch", "rzStep", 0.5, 8, 0.5, c1, -534)
+    MakeSlider(G, "Zoom speed (yards per second)", "rzSpeed", 10, 80, 5, c1, -579)
+
     Header(G, "Settings window", COL2, -58)
     MakeSlider(G, "Window opacity", "menuAlpha", 0, 1, 0.05, c2, -102, true)
     MakeCheck(G, "Hide the game's experimental-camera popup", "hideWarning", COL2, -130, ApplyWarningSuppression)
@@ -3543,6 +3709,16 @@ local function BuildPanel()
         tabs[name] = b
     end
 
+    -- The situation buttons above are shared; everything below is one of two sub-pages: the basics (S) and
+    -- "More" (S2): head tracking, zoom rules, and the Talk interface fade.
+    local Sroot = S
+    S = CreateFrame("Frame", nil, Sroot)
+    S:SetAllPoints(panel)
+    S.accent = Sroot.accent
+    local S2 = CreateFrame("Frame", nil, Sroot)
+    S2:SetAllPoints(panel)
+    S2:Hide()
+    S2.accent = Sroot.accent
     previewBtn = CreateFrame("Button", nil, S, "UIPanelButtonTemplate")
     previewBtn:SetSize(CW, 22)
     previewBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1, -124)
@@ -3572,14 +3748,12 @@ local function BuildPanel()
     profileWidgets[#profileWidgets + 1] = curveBtn
     Tip(compCb, "Compensate for zoom", "Scales the over-the-shoulder offset as you zoom in and out, so the character can stay where it is on screen. Each situation has its own tick; the curve says how much to scale at every camera distance.")
     Tip(curveBtn, "Edit curve", "Opens the compensation curve: camera distance along the bottom, how strongly the shoulder offset is multiplied up the side. 1.0 is the slider's value.")
-    PS("Max zoom factor", "zoom", 1, 3.5, 0.1, -322)
-    PS("Head movement", "headMove", 0, 1, 0.05, -367)
-    PS("Target turn strength", "yaw", 0, 1, 0.05, -412)
-    PS("Target tilt strength", "pitch", 0, 1, 0.05, -457)
-    PS("Camera tilt (deg, + = up)", "tilt", -20, 20, 0.5, -502)
-    panel.sOwn = MakeSlider(S, "Transition into this situation (sec)", "blend", 0.2, 5, 0.1, c1, -547, true, EP)
+    PS("Target turn strength", "yaw", 0, 1, 0.05, -322)
+    PS("Target tilt strength", "pitch", 0, 1, 0.05, -367)
+    PS("Camera tilt (deg, + = up, looks further ahead)", "tilt", -20, 20, 0.5, -412)
+    panel.sOwn = MakeSlider(S, "Transition into this situation (sec)", "blend", 0.2, 5, 0.1, c1, -457, true, EP)
     panel.ownNote = S:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    panel.ownNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1, -538)
+    panel.ownNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1, -448)
     panel.ownNote:SetWidth(CW)
     panel.ownNote:SetJustifyH("LEFT")
     panel.ownNote:SetText(L["Transition times are set for all situations together on the General tab."])
@@ -3882,44 +4056,142 @@ local function BuildPanel()
         panel:HookScript("OnHide", function() if ED then ED:Hide() end end)
     end
 
-    -- camera zoom distance: either a fixed distance or the last zoom you used (one or the other)
-    Header(S, "Zoom distance", COL2, -114)
-    local zoomSlider
+    Header(S, "Screen-edge vignette", COL2, -114)
+    MakeSlider(S, "Opacity (0 = off)", "vigAlpha", 0, 1, 0.05, c2, -158, true, EP)
+    MakeSlider(S, "Range (fraction of the screen)", "vigRange", 0.05, 0.5, 0.01, c2, -202, true, EP)
+    MakeSlider(S, "Falloff (1 = straight, higher = edge only)", "vigCurve", 0.5, 4, 0.1, c2, -246, true, EP)
+
+    Header(S, "Letterbox bars", COL2, -286)
+    MakeSlider(S, "Bar height (0 = off, fraction of screen)", "lbSize", 0, 0.15, 0.005, c2, -330, true, EP)
+
+    Header(S, "Dynamic field of view", COL2, -368)
+    MakeSlider(S, "Widen with speed (up to, degrees)", "fovSpeed", 0, 20, 1, c2, -412, true, EP)
+    MakeSlider(S, "Widen with many enemies (up to, deg)", "crowdFov", 0, 20, 1, c2, -456, true, EP)
+
+    local fovNote = S:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    fovNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1, -500)
+    fovNote:SetWidth(CW)
+    fovNote:SetJustifyH("LEFT")
+    fovNote:SetText(L["Priority: Dungeon/Raid, Combat, Talk, Swimming, Indoors, City, then Exploration. Field of view: 50 to 90, the same range as the game's own slider. Speed and crowd widening add to it, up to 90. Head tracking, zoom rules and the Talk interface fade are under More."])
+
+    -- More: head tracking, zoom rules, Talk interface fade ------------------------------
+    local function PS2(label, key, lo, hi, step, y, cx, noRefresh)
+        profileWidgets[#profileWidgets + 1] = MakeSlider(S2, label, key, lo, hi, step, cx or c1, y, noRefresh or false, EP)
+    end
+    Header(S2, "Head tracking", COL1, -114)
+    PS2("Strength", "headMove", 0, 1, 0.05, -158)
+    PS2("Strength while standing", "headStand", 0, 1, 0.05, -203)
+    PS2("Strength while moving", "headMoving", 0, 1, 0.05, -248)
+    PS2("Reaction speed (higher = snappier)", "headReact", 1, 20, 1, -293)
+    local headNote = S2:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    headNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1, -332)
+    headNote:SetWidth(CW)
+    headNote:SetJustifyH("LEFT")
+    headNote:SetText(L["Head tracking makes the camera follow the movement of your character's head. Strength is the overall amount; standing and moving set it for each case, and a higher reaction speed follows faster, which suits combat. Keep it low if camera motion makes you queasy."])
+
+    -- zoom rules
+    Header(S2, "Zoom distance", COL2, -114)
+    PS2("Max zoom factor", "zoom", 1, 3.5, 0.1, -158, c2)
+    local zoomSlider, minSlider, maxSlider, kindBtns, talkWidgets = nil, nil, nil, {}, {}
     local function ZoomUI()
         local pr = db.profiles[editProfile]
-        if zoomSlider then zoomSlider:SetAlpha(pr.zoomSet and 1 or 0.45) end
+        local set = pr.zoomSet and true or false
+        local kind = pr.zoomKind or 0
+        for i, b in ipairs(kindBtns) do
+            b:SetAlpha(set and 1 or 0.45)
+            if set and kind == i - 1 then b:LockHighlight() else b:UnlockHighlight() end
+        end
+        if zoomSlider then zoomSlider:SetShown(set and kind ~= 3); zoomSlider:SetAlpha(1) end
+        if minSlider then minSlider:SetShown(set and kind == 3) end
+        if maxSlider then maxSlider:SetShown(set and kind == 3) end
+        for _, w in ipairs(talkWidgets) do w:SetShown(editProfile == "npc") end
     end
-    MakeCheck(S, "Remember last zoom in this situation", "zoomRemember", COL2, -136, function()
+    MakeCheck(S2, "Remember last zoom in this situation", "zoomRemember", COL2, -194, function()
         local pr = EP(); if pr.zoomRemember then pr.zoomSet = false end
         for _, refresh in ipairs(controls) do refresh() end
         ZoomUI()
     end, EP)
-    MakeCheck(S, "Use a set zoom distance", "zoomSet", COL2, -162, function()
+    MakeCheck(S2, "Use a set zoom distance", "zoomSet", COL2, -220, function()
         local pr = EP(); if pr.zoomSet then pr.zoomRemember = false end
         for _, refresh in ipairs(controls) do refresh() end
         ZoomUI()
         if editProfile == activeProfile then ConstrainZoom(true) end
     end, EP)
-    zoomSlider = MakeSlider(S, "Zoom distance (yards)", "zoomDist", 1, 40, 0.5, c2, -206, true, EP)
+    local KINDS2 = {
+        { "Exact", "Goes to exactly this distance when the situation starts." },
+        { "In only", "Moves in to this distance if the camera is farther away; leaves it alone if it is already closer." },
+        { "Out only", "Moves out to this distance if the camera is closer; leaves it alone if it is already farther." },
+        { "Range", "Keeps the camera between a nearest and a farthest distance, also while you zoom." },
+    }
+    for i, k in ipairs(KINDS2) do
+        local b = CreateFrame("Button", nil, S2, "UIPanelButtonTemplate")
+        b:SetSize(60, 20)
+        b:SetPoint("TOPLEFT", panel, "TOPLEFT", COL2 + (i - 1) * 63.3, -250)
+        b:SetText(L[k[1]])
+        if b.GetFontString and b:GetFontString() then b:GetFontString():SetFontObject("GameFontNormalSmall") end
+        b:SetScript("OnClick", function()
+            local pr = EP()
+            pr.zoomSet, pr.zoomRemember, pr.zoomKind = true, false, i - 1
+            for _, refresh in ipairs(controls) do refresh() end
+            ZoomUI()
+            if editProfile == activeProfile then ConstrainZoom(true) end
+        end)
+        Tip(b, k[1], k[2])
+        kindBtns[i] = b
+    end
+    zoomSlider = MakeSlider(S2, "Zoom distance (yards)", "zoomDist", 1, 40, 0.5, c2, -292, true, EP)
+    minSlider = MakeSlider(S2, "Nearest distance (yards)", "zoomMin", 1, 40, 0.5, c2, -292, true, EP)
+    maxSlider = MakeSlider(S2, "Farthest distance (yards)", "zoomMax", 1, 40, 0.5, c2, -337, true, EP)
     panel.ZoomUI = ZoomUI
 
-    Header(S, "Screen-edge vignette", COL2, -242)
-    MakeSlider(S, "Opacity (0 = off)", "vigAlpha", 0, 1, 0.05, c2, -286, true, EP)
-    MakeSlider(S, "Range (fraction of the screen)", "vigRange", 0.05, 0.5, 0.01, c2, -330, true, EP)
-    MakeSlider(S, "Falloff (1 = straight, higher = edge only)", "vigCurve", 0.5, 4, 0.1, c2, -374, true, EP)
+    -- Talk only: fade the rest of the interface while a window is open
+    local function Talk(w) talkWidgets[#talkWidgets + 1] = w return w end
+    local talkHead = S2:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local tc = S2.accent or GOLD
+    talkHead:SetPoint("TOPLEFT", panel, "TOPLEFT", COL2, -388)
+    talkHead:SetText(L["Fade the interface while talking"])
+    talkHead:SetTextColor(tc[1], tc[2], tc[3])
+    Talk(talkHead)
+    local talkRule = S2:CreateTexture(nil, "ARTWORK")
+    talkRule:SetColorTexture(tc[1], tc[2], tc[3], 0.7)
+    talkRule:SetPoint("TOPLEFT", panel, "TOPLEFT", COL2, -405)
+    talkRule:SetPoint("TOPRIGHT", panel, "TOPLEFT", COL2 + CW, -405)
+    talkRule:SetHeight(1)
+    Talk(talkRule)
+    local fadeCb = Talk(MakeCheck(S2, "Fade the rest of the interface", "talkFade", COL2, -412, function() Detect.fade.reset(); Refresh() end))
+    Tip(fadeCb, "Fade the rest of the interface", "While a dialogue or vendor window is open, everything else on screen fades out, so only the conversation and the world remain. The window itself, your bags, popups and tooltips stay. It comes back as soon as the window closes.")
+    Talk(MakeSlider(S2, "Opacity of the rest (0 = hidden)", "talkFadeAlpha", 0, 1, 0.05, c2, -458, true))
+    Talk(MakeCheck(S2, "Keep the chat visible", "talkKeepChat", COL2, -486, function() end))
+    Talk(MakeCheck(S2, "Keep the minimap visible", "talkKeepMinimap", COL2, -512, function() end))
+    local keepLabel = S2:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    keepLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", COL2, -544)
+    keepLabel:SetText(L["Also keep these frames (names, comma separated):"])
+    Talk(keepLabel)
+    local keepBox = CreateFrame("EditBox", nil, S2, "InputBoxTemplate")
+    keepBox:SetSize(CW - 12, 20)
+    keepBox:SetPoint("TOPLEFT", panel, "TOPLEFT", COL2 + 8, -562)
+    keepBox:SetAutoFocus(false)
+    keepBox:SetMaxLetters(200)
+    keepBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    keepBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    keepBox:SetScript("OnTextChanged", function(self, user) if user then db.talkKeepFrames = self:GetText() or "" end end)
+    controls[#controls + 1] = function() keepBox:SetText(db.talkKeepFrames or "") end
+    Talk(keepBox)
 
-    Header(S, "Letterbox bars", COL2, -414)
-    MakeSlider(S, "Bar height (0 = off, fraction of screen)", "lbSize", 0, 0.15, 0.005, c2, -458, true, EP)
-
-    Header(S, "Dynamic field of view", COL2, -496)
-    MakeSlider(S, "Widen with speed (up to, degrees)", "fovSpeed", 0, 20, 1, c2, -540, true, EP)
-    MakeSlider(S, "Widen with many enemies (up to, deg)", "crowdFov", 0, 20, 1, c2, -584, true, EP)
-
-    local fovNote = S:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    fovNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1, -588)
-    fovNote:SetWidth(CW)
-    fovNote:SetJustifyH("LEFT")
-    fovNote:SetText(L["Priority: Dungeon/Raid, Combat, Talk, Swimming, Indoors, City, then Exploration. Field of view: 50 to 90, the same range as the game's own slider. Speed and crowd widening add to it, up to 90."])
+    -- the toggle between the two sub-pages, beside the situation buttons
+    local moreBtn = CreateFrame("Button", nil, Sroot, "UIPanelButtonTemplate")
+    moreBtn:SetSize(66, 26)
+    moreBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1 + 7 * 68, -60)
+    local function SubPage(n)
+        panel.subPage = n
+        S:SetShown(n == 1)
+        S2:SetShown(n == 2)
+        moreBtn:SetText(n == 1 and L["More >"] or L["< Back"])
+        if n == 2 then ZoomUI() end
+    end
+    moreBtn:SetScript("OnClick", function() SubPage(panel.subPage == 2 and 1 or 2) end)
+    Tip(moreBtn, "More", "Head tracking, zoom rules for this situation, and (in Talk) fading the interface.")
+    panel.SubPage = SubPage
 
     panel.ShowBlend = ShowBlend
 
@@ -4853,6 +5125,12 @@ events:SetScript("OnEvent", function(self, event, arg1)
                 if P[name].lbSize == nil then P[name].lbSize = 0 end
                 if P[name].fovSpeed == nil then P[name].fovSpeed = 0 end
                 if P[name].crowdFov == nil then P[name].crowdFov = 0 end
+                if P[name].headStand == nil then P[name].headStand = 0.3 end
+                if P[name].headMoving == nil then P[name].headMoving = 0.5 end
+                if P[name].headReact == nil then P[name].headReact = 10 end
+                if P[name].zoomKind == nil then P[name].zoomKind = 0 end
+                if P[name].zoomMin == nil then P[name].zoomMin = 5 end
+                if P[name].zoomMax == nil then P[name].zoomMax = 20 end
             end
         end
         -- shoulder compensation is a curve per situation (the old single strength becomes a curve)
