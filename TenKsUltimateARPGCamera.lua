@@ -24,7 +24,7 @@ local L = setmetatable({}, { __index = function(_, key)
 end })
 
 -- Version information and release notes.
-local Meta = { version = "1.3.9" }
+local Meta = { version = "1.3.10" }
 do
     local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
     if get then
@@ -33,6 +33,7 @@ do
     end
 end
 Meta.notes = {
+    "Shoulder compensation is now set per situation: tick \"Compensate for zoom\" under Over-the-shoulder and press Edit curve to shape how the offset changes with camera distance (drag points, click to add, right-click to remove). \"Use this one curve for all situations\" shares one curve. The old Camera framing controls on the General tab are gone; your old setting became a curve",
     "Over the shoulder is now even across each preset's situations, and the presets are ordered from least to most: Comfort (0.3), Tactical (0.7), Default (1.0), Controller (1.6), Cinematic (2.2). Pick a preset again to get the new values",
     "Smoother speed and crowd field of view: the widening now eases in and out in two soft stages and is updated every frame in tiny steps, instead of in small jumps 20 times a second",
     "Field of view goes from 50 to 90 again, the same range as the game's slider, and the view now always matches the slider: speed and crowd widening add on top instead of narrowing the resting view",
@@ -94,8 +95,8 @@ local DEFAULTS = {
     terrainTilt = true,
     bobbing = true,     -- camera bob while moving
     shoulder = 1,        -- over-the-shoulder offset; positive = right, negative = left
-    shoulderCompOn = true, -- master switch for the zoom compensation below
-    shoulderComp = 0,    -- 0 = fixed shoulder offset, 1 = scales with zoom so the character stays put on screen
+    shCompShare = false, -- one shoulder compensation curve shared by every situation
+    shCompCurve = "0:1,50:1", -- the shared curve: "camera distance:multiplier" points
     zoom = 3.5,          -- max zoom factor (this client accepts up to 3.5)
     headMove = 0.75,      -- subtle camera sway from head movement (0-1)
     smooth = 1,        -- camera turning speed multiplier (lower = smoother/slower)
@@ -733,7 +734,6 @@ local function BaseDist()
     return cachedBase
 end
 
-local SHOULDER_REF = 10 -- camera distance (yards) at which the slider value is exact
 
 -- Smoothed profile values -------------------------------------------------
 -- `shown` holds the values actually in use (field of view, shoulder, max zoom
@@ -757,6 +757,98 @@ end
 
 local function Ease(t) return t * t * (3 - 2 * t) end
 
+-- Shoulder compensation -----------------------------------------------------
+-- The over-the-shoulder slider is the offset at "1.0". When a situation turns compensation on, its curve gives a
+-- multiplier for every camera distance, so the character can stay put on screen as you zoom. A curve is a short
+-- text, "yards:multiplier,yards:multiplier,...", with at least two points sorted by distance.
+do
+local Comp = {}
+Detect.comp = Comp
+Comp.ZMAX, Comp.VMAX, Comp.FLAT = 50, 4, "0:1,50:1"
+local cache, cached = {}, 0
+function Comp.parse(str)
+    if type(str) ~= "string" or #str > 400 then return nil end
+    local hit = cache[str]
+    if hit ~= nil then return hit or nil end
+    local pts = {}
+    for z, v in str:gmatch("([%-%d%.]+):([%-%d%.]+)") do
+        z, v = tonumber(z), tonumber(v)
+        if not z or not v or z ~= z or v ~= v then pts = nil break end
+        pts[#pts + 1] = { z = z, v = v }
+    end
+    local ok = pts ~= nil and #pts >= 2 and #pts <= 24
+    if ok then
+        for i, pt in ipairs(pts) do
+            if pt.z < 0 or pt.z > Comp.ZMAX or pt.v < 0 or pt.v > Comp.VMAX or (i > 1 and pt.z <= pts[i - 1].z) then ok = false break end
+        end
+    end
+    if cached > 200 then wipe(cache); cached = 0 end
+    cached = cached + 1
+    cache[str] = ok and pts or false
+    return ok and pts or nil
+end
+function Comp.valid(str) return Comp.parse(str) ~= nil end
+local function Num(x) return (string.format("%.3f", x):gsub("0+$", ""):gsub("%.$", "")) end
+function Comp.str(pts)
+    local out = {}
+    for i, pt in ipairs(pts) do out[i] = Num(pt.z) .. ":" .. Num(pt.v) end
+    return table.concat(out, ",")
+end
+-- The multiplier at a camera distance (the curve's ends hold beyond the first and last point).
+function Comp.eval(pts, zoom)
+    if zoom <= pts[1].z then return pts[1].v end
+    local n = #pts
+    if zoom >= pts[n].z then return pts[n].v end
+    for i = 1, n - 1 do
+        local a, b = pts[i], pts[i + 1]
+        if zoom <= b.z then return a.v + (b.v - a.v) * (zoom - a.z) / (b.z - a.z) end
+    end
+    return pts[n].v
+end
+-- A curve that holds the character at the same place on screen to the degree k (0 = never, 1 = exactly).
+function Comp.fromPower(k)
+    local pts = {}
+    for _, z in ipairs({ 0, 2, 4, 7, 10, 15, 20, 30, 40, 50 }) do
+        pts[#pts + 1] = { z = z, v = math.max(0, math.min(Comp.VMAX, (math.max(z, 1) / 10) ^ k)) }
+    end
+    return Comp.str(pts)
+end
+function Comp.enabled(name)
+    local p = db and db.profiles and db.profiles[name]
+    return p ~= nil and p.shComp == true
+end
+-- The curve text a situation uses: the shared one, or its own.
+function Comp.curveStr(name)
+    if db.shCompShare then return db.shCompCurve end
+    local p = db.profiles and db.profiles[name]
+    return p and p.shCurve
+end
+function Comp.points(name)
+    if not Comp.enabled(name) then return nil end
+    return Comp.parse(Comp.curveStr(name))
+end
+function Comp.zoom()
+    local z = GetCameraZoom and GetCameraZoom()
+    if type(z) ~= "number" or issecret(z) then return 10 end
+    return z
+end
+-- True while a curve is in play (or was, a moment ago, in the situation being left).
+function Comp.active()
+    return Comp.points(activeProfile) ~= nil or (trans ~= nil and trans.shFrom ~= nil and trans.shFrom ~= false)
+end
+-- The multiplier in use right now, easing from the old situation's curve to the new one's during a transition.
+function Comp.current()
+    local zoom = Comp.zoom()
+    local pts = Comp.points(activeProfile)
+    local m = pts and Comp.eval(pts, zoom) or 1
+    if trans and trans.shFrom ~= nil then
+        local fr = trans.shFrom and Comp.eval(trans.shFrom, zoom) or 1
+        m = fr + (m - fr) * Ease(trans.t)
+    end
+    return m
+end
+end
+
 local function BeginTransition(oldName, newName)
     for _, k in ipairs(PROFILE_KEYS) do from[k] = shown[k] end
     local dur = db.blendTime or 1.2
@@ -769,7 +861,7 @@ local function BeginTransition(oldName, newName)
     -- camera-follow is slowed while it runs so the view doesn't swing back behind you
     local calm = oldName == "npc" and newName ~= "combat" and newName ~= "instance" and not Detect.skipDelay
     if calm then dur = math.min(math.max(dur * 1.5, 2.5), 4.5) end
-    trans = { t = 0, dur = math.max(0.2, dur), calm = calm }
+    trans = { t = 0, dur = math.max(0.2, dur), calm = calm, shFrom = Detect.comp.points(oldName) or false }
 end
 
 local function StepShown(dt)
@@ -807,12 +899,7 @@ local function Put(name, value, tol, fmt)
 end
 
 local function EffectiveShoulder()
-    local zoom = GetCameraZoom and GetCameraZoom() or SHOULDER_REF
-    if type(zoom) ~= "number" or issecret(zoom) then zoom = SHOULDER_REF end
-    zoom = math.max(zoom, 1)
-    local f = 1
-    if db.shoulderCompOn then f = (zoom / SHOULDER_REF) ^ (db.shoulderComp or 0) end
-    return math.max(-20, math.min(20, (shown.shoulder or 0) * f))
+    return math.max(-20, math.min(20, (shown.shoulder or 0) * Detect.comp.current()))
 end
 
 local ApplyRamp -- defined below
@@ -1078,7 +1165,14 @@ function Detect.stepFov(dt)
     end
     Put(CV.fov, math.max(50, math.min(90, fov)), 0.01, "%.2f")
 end
-local function StepBlend(dt, skipFov)
+-- shoulder: the profile's value times its zoom compensation curve, lightly smoothed
+function Detect.stepShoulder(dt)
+    local ts = EffectiveShoulder()
+    shoulderShown = shoulderShown and (shoulderShown + (ts - shoulderShown) * (1 - math.exp(-dt * 12))) or ts
+    if math.abs(ts - shoulderShown) < 0.003 then shoulderShown = ts end
+    Put(CV.shoulder, shoulderShown, 0.003)
+end
+local function StepBlend(dt, skipFov, skipSh)
     if not db or not db.enabled then return end
     StepShown(dt)
     Detect.stepTalkFocus(dt)
@@ -1096,11 +1190,7 @@ local function StepBlend(dt, skipFov)
     VigApply(shown.vigAlpha, shown.vigRange or 0.3, shown.vigCurve or 2)
     LbApply(shown.lbSize)
 
-    -- shoulder: the profile's value, scaled for zoom, lightly smoothed
-    local ts = EffectiveShoulder()
-    shoulderShown = shoulderShown and (shoulderShown + (ts - shoulderShown) * (1 - math.exp(-dt * 8))) or ts
-    if math.abs(ts - shoulderShown) < 0.005 then shoulderShown = ts end
-    Put(CV.shoulder, shoulderShown, 0.004)
+    if not skipSh then Detect.stepShoulder(dt) end
 
     Put(CV.headMove, shown.headMove, 0.004, "%.2f")
 
@@ -2378,8 +2468,17 @@ fxDriver:SetScript("OnUpdate", function(self, elapsed)
                 tm.fovT = 0
             end
         end
+        local comp = Detect.comp.active()
+        if comp then
+            -- zooming moves the compensated shoulder, so it is stepped every frame while a curve is in use
+            tm.shT = (tm.shT or 0) + elapsed
+            if tm.shT >= (lazy and 0.033 or 0) then
+                Detect.stepShoulder(tm.shT)
+                tm.shT = 0
+            end
+        end
         if tm.idle >= 0.2 then
-            StepBlend(tm.idle, dyn)
+            StepBlend(tm.idle, dyn, comp)
             StepTilt(tm.idle)
             tm.idle = 0
         end
@@ -2560,11 +2659,12 @@ local PROFILE_FIELDS = {
     zoomRemember = "boolean", zoomSet = "boolean", zoomDist = "number",
     vigAlpha = "number", vigRange = "number", vigCurve = "number",
     lbSize = "number", fovSpeed = "number", crowdFov = "number",
+    shComp = "boolean", shCurve = "string",
 }
 local RANGES = {
     fov = { 50, 90 }, zoom = { 1, 3.5 }, shoulder = { -10, 10 }, headMove = { 0, 1 }, yaw = { 0, 1 },
     pitch = { 0, 1 }, tilt = { -20, 20 }, blend = { 0.2, 5 }, zoomDist = { 1, 40 }, blendTime = { 0.2, 5 },
-    rampTime = { 0.1, 2 }, smooth = { 0.2, 1 }, shoulderComp = { -1.5, 1.5 }, fxSize = { 40, 300 },
+    rampTime = { 0.1, 2 }, smooth = { 0.2, 1 }, fxSize = { 40, 300 },
     fxOffset = { -100, 100 }, fxSpeed = { -180, 180 }, fxAlpha = { 0.2, 1 }, fxCurve = { 0, 1 },
     fxDistShift = { -40, 40 }, fxGlow = { 0, 1 },
     vigAlpha = { 0, 1 }, vigRange = { 0.05, 0.5 }, vigCurve = { 0.5, 4 },
@@ -2594,10 +2694,14 @@ local function CleanValue(key, v)
         if v ~= v or v == math.huge or v == -math.huge then return nil end
         local r = RANGES[rk]
         if r then v = math.max(r[1], math.min(r[2], v)) end
-    elseif t == "string" and key == "fxStyle" and not STYLES[v] then
-        return nil
-    elseif t == "string" and key ~= "fxStyle" then
-        return nil
+    elseif t == "string" then
+        if key == "fxStyle" then
+            if not STYLES[v] then return nil end
+        elseif rk == "shCurve" or key == "shCompCurve" then
+            if not Detect.comp.valid(v) then return nil end
+        else
+            return nil
+        end
     end
     return v
 end
@@ -2637,6 +2741,7 @@ local PROFILE_BASE = {
     on = true, tilt = 0, fov = 85, shoulder = 1, zoom = 3.5, headMove = 0.75, yaw = 0.25, pitch = 0.25,
     blend = 1.5, zoomRemember = true, zoomSet = false, zoomDist = 10,
     vigAlpha = 0, vigRange = 0.3, vigCurve = 2, lbSize = 0, fovSpeed = 0, crowdFov = 0,
+    shComp = false, shCurve = "0:1,50:1",
 }
 
 -- Turns { top-level settings, per-situation tables } into a flat snapshot-style table.
@@ -2691,23 +2796,23 @@ end
 local top = {
     Cinematic = {
         smooth = 0.4, rampTime = 0.6, blendAll = false, slowExit = true, blendTime = 2.4,
-        bobbing = true, terrainTilt = true, dynamicPitch = true, shoulderComp = 0.4,
+        bobbing = true, terrainTilt = true, dynamicPitch = true, shCompShare = true, shCompCurve = Detect.comp.fromPower(0.4),
         fxSize = 210, fxGlow = 0.9, fxAlpha = 0.8, fxSpeed = 6, fxLock = true, fxHit = true,
     },
     Tactical = {
         smooth = 0.9, rampTime = 0.15, blendAll = false, slowExit = false, blendTime = 0.7,
-        bobbing = false, terrainTilt = false, dynamicPitch = false, shoulderComp = 0,
+        bobbing = false, terrainTilt = false, dynamicPitch = false,
         fxSize = 240, fxGlow = 0.35, fxAlpha = 0.85, fxSpeed = 0, fxLock = false, fxHit = false, fxElite = true,
     },
     Controller = {
         smooth = 0.65, rampTime = 0.3, blendAll = false, slowExit = false, blendTime = 1.2,
-        bobbing = false, terrainTilt = true, dynamicPitch = true, shoulderComp = 0.6,
+        bobbing = false, terrainTilt = true, dynamicPitch = true, shCompShare = true, shCompCurve = Detect.comp.fromPower(0.6),
         fxSize = 260, fxGlow = 0.9, fxAlpha = 0.9, fxSpeed = 4, fxLock = true, fxHit = true, fxElite = true,
         fxFriendScale = 0.7,
     },
     Comfort = {
         smooth = 0.5, rampTime = 0.5, blendAll = false, slowExit = true, blendTime = 1.8,
-        bobbing = false, terrainTilt = false, dynamicPitch = false, shoulderComp = 0,
+        bobbing = false, terrainTilt = false, dynamicPitch = false,
         fxSize = 200, fxGlow = 0.4, fxAlpha = 0.8, fxSpeed = 0, fxLock = false, fxHit = false,
     },
 }
@@ -2762,6 +2867,12 @@ local controller = {
                    zoomRemember = false, zoomDist = 10, blend = 0.7,
                    vigAlpha = 0.24, vigRange = 0.24, vigCurve = 3, fovSpeed = 4, crowdFov = 8 },
 }
+-- Cinematic and Controller keep the character where it is on screen as you zoom, in every situation
+for _, set in ipairs({ { cinematic, 0.4 }, { controller, 0.6 } }) do
+    for _, name in ipairs(PROFILES) do
+        set[1][name].shComp, set[1][name].shCurve = true, Detect.comp.fromPower(set[2])
+    end
+end
 -- Comfort: the same steady view everywhere; only the world profile is in use.
 local comfort = {}
 for _, name in ipairs(PROFILES) do
@@ -3172,15 +3283,11 @@ local function BuildPanel()
     MakeSlider(G, "Turn smoothing", "smooth", 0.2, 1, 0.05, c1, -246)
     MakeSlider(G, "Blend time (sec)", "rampTime", 0.1, 2, 0.1, c1, -291)
 
-    Header(G, "Camera framing", COL1, -328)
-    MakeCheck(G, "Compensate shoulder offset for zoom", "shoulderCompOn", COL1, -350, function() ApplyShoulder(true) end)
-    MakeSlider(G, "Compensation strength", "shoulderComp", -1.5, 1.5, 0.1, c1, -394, true)
-
-    Header(G, "Camera feel", COL1, -431)
-    MakeCheck(G, "Dynamic pitch", "dynamicPitch", COL1, -453)
-    MakeCheck(G, "Terrain tilt", "terrainTilt", COL1, -479)
-    MakeCheck(G, "Camera bobbing", "bobbing", COL1, -505)
-    local lowCb = MakeCheck(G, "Battery saver (lighter updates)", "lowCpu", COL1, -531, function() end)
+    Header(G, "Camera feel", COL1, -328)
+    MakeCheck(G, "Dynamic pitch", "dynamicPitch", COL1, -350)
+    MakeCheck(G, "Terrain tilt", "terrainTilt", COL1, -376)
+    MakeCheck(G, "Camera bobbing", "bobbing", COL1, -402)
+    local lowCb = MakeCheck(G, "Battery saver (lighter updates)", "lowCpu", COL1, -428, function() end)
     Tip(lowCb, "Battery saver (lighter updates)", "Checks situations and updates the targeting frame less often. Saves a little CPU and battery on a handheld; the camera may react a fraction of a second later and the frame animates a little less smoothly.")
 
     Header(G, "Settings window", COL2, -58)
@@ -3400,6 +3507,7 @@ local function BuildPanel()
         if previewBtn then previewBtn:SetText(previewProfile == editProfile and L["Stop preview"] or L["Preview this situation"]) end
         for _, refresh in ipairs(controls) do refresh() end
         if panel.ZoomUI then panel.ZoomUI() end
+        if panel.CurveRefresh then panel.CurveRefresh() end
     end
     panel.RefreshProfileWidgets = RefreshProfileWidgets
 
@@ -3451,17 +3559,328 @@ local function BuildPanel()
     end
     PS("Field of view", "fov", 50, 90, 1, -198)
     PS("Over-the-shoulder", "shoulder", -10, 10, 0.1, -243)
-    PS("Max zoom factor", "zoom", 1, 3.5, 0.1, -288)
-    PS("Head movement", "headMove", 0, 1, 0.05, -333)
-    PS("Target turn strength", "yaw", 0, 1, 0.05, -378)
-    PS("Target tilt strength", "pitch", 0, 1, 0.05, -423)
-    PS("Camera tilt (deg, + = up)", "tilt", -20, 20, 0.5, -468)
-    panel.sOwn = MakeSlider(S, "Transition into this situation (sec)", "blend", 0.2, 5, 0.1, c1, -513, true, EP)
+    -- zoom compensation for the shoulder offset: a tick per situation and a curve to shape it
+    local compCb = MakeCheck(S, "Compensate for zoom", "shComp", COL1, -279, function()
+        ApplyShoulder(true); Refresh(); RefreshProfileWidgets()
+    end, EP)
+    local curveBtn = CreateFrame("Button", nil, S, "UIPanelButtonTemplate")
+    curveBtn:SetSize(100, 22)
+    curveBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1 + 150, -281)
+    curveBtn:SetText(L["Edit curve"])
+    curveBtn:SetScript("OnClick", function() if panel.OpenCurve then panel.OpenCurve() end end)
+    profileWidgets[#profileWidgets + 1] = compCb
+    profileWidgets[#profileWidgets + 1] = curveBtn
+    Tip(compCb, "Compensate for zoom", "Scales the over-the-shoulder offset as you zoom in and out, so the character can stay where it is on screen. Each situation has its own tick; the curve says how much to scale at every camera distance.")
+    Tip(curveBtn, "Edit curve", "Opens the compensation curve: camera distance along the bottom, how strongly the shoulder offset is multiplied up the side. 1.0 is the slider's value.")
+    PS("Max zoom factor", "zoom", 1, 3.5, 0.1, -322)
+    PS("Head movement", "headMove", 0, 1, 0.05, -367)
+    PS("Target turn strength", "yaw", 0, 1, 0.05, -412)
+    PS("Target tilt strength", "pitch", 0, 1, 0.05, -457)
+    PS("Camera tilt (deg, + = up)", "tilt", -20, 20, 0.5, -502)
+    panel.sOwn = MakeSlider(S, "Transition into this situation (sec)", "blend", 0.2, 5, 0.1, c1, -547, true, EP)
     panel.ownNote = S:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    panel.ownNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1, -504)
+    panel.ownNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1, -538)
     panel.ownNote:SetWidth(CW)
     panel.ownNote:SetJustifyH("LEFT")
     panel.ownNote:SetText(L["Transition times are set for all situations together on the General tab."])
+
+
+    -- The compensation curve editor ----------------------------------------
+    -- Camera distance runs left to right, the multiplier bottom to top (1.0 = the slider's value). Drag a point,
+    -- click empty space to add one, right-click a point to remove it. The little buttons nudge the selected point
+    -- for gamepad or touch use.
+    do
+        local Comp = Detect.comp
+        local GW, GH, GX, GY = 340, 200, 48, -96 -- graph size and its place in the window
+        local ED, pts, sel
+        local frames, lines = {}, {}
+        local function Dst()
+            if db.shCompShare then return db, "shCompCurve" end
+            return db.profiles[editProfile], "shCurve"
+        end
+        local function Load()
+            local t, k = Dst()
+            local src = Comp.parse(t[k]) or Comp.parse(Comp.FLAT)
+            pts = {}
+            for i, pt in ipairs(src) do pts[i] = { z = pt.z, v = pt.v } end
+            if pts[1].z > 0 then table.insert(pts, 1, { z = 0, v = pts[1].v }) end
+            if pts[#pts].z < Comp.ZMAX then pts[#pts + 1] = { z = Comp.ZMAX, v = pts[#pts].v } end
+            if not sel or sel > #pts then sel = nil end
+        end
+        local function Save()
+            local t, k = Dst()
+            t[k] = Comp.str(pts)
+        end
+        local function PX(z) return z / Comp.ZMAX * GW end
+        local function PY(v) return v / Comp.VMAX * GH end
+        local Redraw
+        local function Snap(x, step) return math.floor(x / step + 0.5) * step end
+        local function CursorToData()
+            local x, y = GetCursorPosition()
+            local sc = ED.graph:GetEffectiveScale()
+            x, y = x / sc, y / sc
+            local z = (x - ED.graph:GetLeft()) / GW * Comp.ZMAX
+            local v = (y - ED.graph:GetBottom()) / GH * Comp.VMAX
+            return math.max(0, math.min(Comp.ZMAX, z)), math.max(0, math.min(Comp.VMAX, v))
+        end
+        local function MovePoint(i, z, v)
+            local pt = pts[i]
+            if i > 1 and i < #pts then
+                z = math.max(pts[i - 1].z + 0.5, math.min(pts[i + 1].z - 0.5, z))
+                pt.z = Snap(z, 0.5)
+            end
+            pt.v = math.max(0, math.min(Comp.VMAX, Snap(v, 0.05)))
+            Save(); Redraw()
+        end
+        local function Line(i, x1, y1, x2, y2, r, g, b, a, w)
+            local ln = lines[i]
+            if not ln then
+                ln = ED.graph:CreateLine(nil, "ARTWORK")
+                lines[i] = ln
+            end
+            ln:SetColorTexture(r, g, b, a)
+            ln:SetThickness(w)
+            ln:SetStartPoint("BOTTOMLEFT", ED.graph, x1, y1)
+            ln:SetEndPoint("BOTTOMLEFT", ED.graph, x2, y2)
+            ln:Show()
+        end
+        function Redraw()
+            if not ED then return end
+            -- points
+            for i, pt in ipairs(pts) do
+                local fr = frames[i]
+                if not fr then
+                    fr = CreateFrame("Button", nil, ED.graph)
+                    fr:SetSize(16, 16)
+                    fr:RegisterForClicks("LeftButtonDown", "RightButtonDown", "LeftButtonUp")
+                    fr.tex = fr:CreateTexture(nil, "OVERLAY")
+                    fr.tex:SetAllPoints()
+                    fr.idx = i
+                    fr:SetScript("OnMouseDown", function(self, btn)
+                        if btn == "RightButton" then
+                            if self.idx > 1 and self.idx < #pts and #pts > 2 then
+                                table.remove(pts, self.idx); sel = nil; Save(); Redraw()
+                            end
+                        else
+                            sel = self.idx; ED.dragging = self.idx; Redraw()
+                        end
+                    end)
+                    fr:SetScript("OnMouseUp", function() ED.dragging = nil end)
+                    frames[i] = fr
+                end
+                fr.idx = i
+                fr:ClearAllPoints()
+                fr:SetPoint("CENTER", ED.graph, "BOTTOMLEFT", PX(pt.z), PY(pt.v))
+                local c = (i == sel) and { 1, 1, 1 } or { 1, 0.82, 0 }
+                fr.tex:SetColorTexture(c[1], c[2], c[3], 1)
+                fr:SetSize(i == sel and 14 or 11, i == sel and 14 or 11)
+                fr:Show()
+            end
+            for i = #pts + 1, #frames do frames[i]:Hide() end
+            -- the curve
+            if ED.graph.CreateLine then
+                for i = 1, #pts - 1 do
+                    Line(i, PX(pts[i].z), PY(pts[i].v), PX(pts[i + 1].z), PY(pts[i + 1].v), 1, 0.82, 0, 0.95, 2.5)
+                end
+                for i = #pts, #lines do if lines[i] then lines[i]:Hide() end end
+            end
+            -- text
+            local sh = db.shCompShare
+            local pc = PROFILE_COLORS[editProfile] or GOLD
+            local name = sh and L["All situations"] or string.format("|cff%02x%02x%02x%s|r", math.floor(pc[1] * 255), math.floor(pc[2] * 255), math.floor(pc[3] * 255), PROFILE_NAMES[editProfile])
+            local on = Comp.enabled(editProfile)
+            ED.sub:SetText(L["Situation: "] .. name .. (on and "" or ("  |cffff8866" .. L["compensation is off here"] .. "|r")))
+            ED.share:SetChecked(sh and true or false)
+            if sel and pts[sel] then
+                ED.selTxt:SetText(string.format(L["Point %d: %.1f yd, x%.2f"], sel, pts[sel].z, pts[sel].v))
+            else
+                ED.selTxt:SetText(L["Click a point to select it."])
+            end
+        end
+        local function Build()
+            local f = CreateFrame("Frame", "TenKsARPGCameraCurve", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+            f:SetSize(430, 440)
+            f:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+            f:SetFrameStrata("FULLSCREEN_DIALOG")
+            f:SetClampedToScreen(true)
+            f:SetMovable(true)
+            f:EnableMouse(true)
+            f:RegisterForDrag("LeftButton")
+            f:SetScript("OnDragStart", function(self) self:StartMoving() end)
+            f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+            if f.SetBackdrop then
+                f:SetBackdrop(BACKDROP)
+                f:SetBackdropColor(0.04, 0.05, 0.08, 0.97)
+                f:SetBackdropBorderColor(0.7, 0.7, 0.75, 1)
+            end
+            f:Hide()
+            if UISpecialFrames then tinsert(UISpecialFrames, "TenKsARPGCameraCurve") end
+            local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+            title:SetPoint("TOPLEFT", 16, -14)
+            title:SetText(L["Shoulder compensation curve"])
+            f.sub = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            f.sub:SetPoint("TOPLEFT", 16, -38)
+            local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+            close:SetPoint("TOPRIGHT", -2, -2)
+            -- one curve for everything
+            f.share = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
+            f.share:SetSize(24, 24)
+            f.share:SetPoint("TOPLEFT", 12, -54)
+            local st = f.share.Text or f.share.text
+            if not st then st = f.share:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); st:SetPoint("LEFT", f.share, "RIGHT", 4, 0) end
+            st:SetText(L["Use this one curve for all situations"])
+            if st.SetFontObject then st:SetFontObject("GameFontHighlightSmall") end
+            f.share:SetScript("OnClick", function(self)
+                local want = self:GetChecked() and true or false
+                if want then
+                    local cur = Comp.str(pts)       -- the curve on screen becomes the shared one
+                    db.shCompShare, db.shCompCurve = true, cur
+                else
+                    db.shCompShare = false          -- every situation keeps a copy of it
+                    for _, name in ipairs(PROFILES) do db.profiles[name].shCurve = db.shCompCurve end
+                end
+                Load(); Redraw(); ApplyShoulder(true)
+            end)
+            f.share:SetScript("OnEnter", function(self)
+                if GameTooltip then
+                    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                    GameTooltip:SetText(L["Use this one curve for all situations"], 1, 0.82, 0)
+                    GameTooltip:AddLine(L["Every situation follows the same curve. Each one still decides for itself whether compensation is on. Turning this off gives every situation its own copy of the curve."], 1, 1, 1, true)
+                    GameTooltip:Show()
+                end
+            end)
+            f.share:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
+            -- graph
+            local g = CreateFrame("Frame", nil, f)
+            g:SetSize(GW, GH)
+            g:SetPoint("TOPLEFT", f, "TOPLEFT", GX, GY)
+            f.graph = g
+            local bg = g:CreateTexture(nil, "BACKGROUND")
+            bg:SetAllPoints()
+            bg:SetColorTexture(0.02, 0.02, 0.03, 0.9)
+            g:EnableMouse(true)
+            g:SetScript("OnMouseDown", function(_, btn)
+                if btn ~= "LeftButton" or #pts >= 24 then return end
+                local z, v = CursorToData()
+                z = Snap(z, 0.5)
+                if z <= 0 or z >= Comp.ZMAX then return end
+                for _, pt in ipairs(pts) do if math.abs(pt.z - z) < 1 then return end end
+                table.insert(pts, { z = z, v = math.max(0, math.min(Comp.VMAX, Snap(v, 0.05))) })
+                table.sort(pts, function(a, b) return a.z < b.z end)
+                for i, pt in ipairs(pts) do if pt.z == z then sel = i end end
+                Save(); Redraw()
+            end)
+            -- grid and labels
+            for gz = 0, Comp.ZMAX, 10 do
+                local t = g:CreateTexture(nil, "BORDER")
+                t:SetColorTexture(1, 1, 1, gz == 0 and 0.35 or 0.1)
+                t:SetPoint("BOTTOMLEFT", g, "BOTTOMLEFT", PX(gz), 0)
+                t:SetSize(1, GH)
+                local lb = g:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+                lb:SetPoint("TOP", g, "BOTTOMLEFT", PX(gz), -3)
+                lb:SetText(gz)
+            end
+            for gv = 0, Comp.VMAX do
+                local t = g:CreateTexture(nil, "BORDER")
+                t:SetColorTexture(gv == 1 and 0.4 or 1, gv == 1 and 0.9 or 1, gv == 1 and 0.5 or 1, gv == 1 and 0.55 or (gv == 0 and 0.35 or 0.1))
+                t:SetPoint("BOTTOMLEFT", g, "BOTTOMLEFT", 0, PY(gv))
+                t:SetSize(GW, 1)
+                local lb = g:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+                lb:SetPoint("RIGHT", g, "BOTTOMLEFT", -5, PY(gv))
+                lb:SetText(gv == 1 and "1.0" or gv)
+            end
+            local xcap = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+            xcap:SetPoint("TOP", g, "BOTTOM", 0, -18)
+            xcap:SetText(L["Camera distance (yards)"])
+            local ycap = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+            ycap:SetPoint("BOTTOMLEFT", g, "TOPLEFT", -30, 4)
+            ycap:SetText(L["Shoulder multiplier (1.0 = slider value)"])
+            -- where the camera is right now
+            f.mark = g:CreateTexture(nil, "ARTWORK")
+            f.mark:SetColorTexture(0.4, 0.8, 1, 0.9)
+            f.mark:SetSize(1, GH)
+            f.dot = g:CreateTexture(nil, "OVERLAY")
+            f.dot:SetColorTexture(0.4, 0.8, 1, 1)
+            f.dot:SetSize(7, 7)
+            f.nowTxt = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            f.nowTxt:SetPoint("TOPLEFT", g, "BOTTOMLEFT", -30, -38)
+            f.nowTxt:SetTextColor(0.55, 0.85, 1)
+            f.selTxt = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            f.selTxt:SetPoint("TOPLEFT", g, "BOTTOMLEFT", -30, -60)
+            local function Nudge(label, x, dz, dv)
+                local b = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+                b:SetSize(26, 22)
+                b:SetPoint("TOPLEFT", g, "BOTTOMLEFT", x, -56)
+                b:SetText(label)
+                b:SetScript("OnClick", function()
+                    if not sel or not pts[sel] then return end
+                    MovePoint(sel, pts[sel].z + dz, pts[sel].v + dv)
+                end)
+                return b
+            end
+            Nudge("<", 190, -0.5, 0); Nudge(">", 218, 0.5, 0); Nudge("-", 250, 0, -0.05); Nudge("+", 278, 0, 0.05)
+            -- starting shapes
+            local function Shape(label, x, w, fn, tip)
+                local b = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+                b:SetSize(w, 22)
+                b:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", x, 44)
+                b:SetText(label)
+                b:SetScript("OnClick", function()
+                    local t, k = Dst()
+                    t[k] = fn(); sel = nil; Load(); Redraw(); ApplyShoulder(true)
+                end)
+                b:SetScript("OnEnter", function(self)
+                    if GameTooltip then
+                        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+                        GameTooltip:SetText(label, 1, 0.82, 0)
+                        GameTooltip:AddLine(tip, 1, 1, 1, true)
+                        GameTooltip:Show()
+                    end
+                end)
+                b:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
+            end
+            Shape(L["Flat"], 16, 70, function() return Comp.FLAT end, L["The slider's value at every distance (no compensation)."])
+            Shape(L["Gentle"], 90, 70, function() return Comp.fromPower(0.4) end, L["The offset grows a little as you zoom out."])
+            Shape(L["Full"], 164, 70, function() return Comp.fromPower(1) end, L["The offset grows in step with the distance, which keeps the character at the same place on screen."])
+            local hint = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+            hint:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 16, 14)
+            hint:SetWidth(398)
+            hint:SetJustifyH("LEFT")
+            hint:SetText(L["Drag a point to shape the curve. Click empty space to add a point, right-click a point to remove it. Preview the situation to watch the blue marker follow your zoom."])
+            -- dragging and the live marker
+            local acc = 0
+            f:SetScript("OnUpdate", function(self, el)
+                if self.dragging and IsMouseButtonDown and not IsMouseButtonDown("LeftButton") then self.dragging = nil end
+                if self.dragging and GetCursorPosition and pts[self.dragging] then
+                    local z, v = CursorToData()
+                    MovePoint(self.dragging, z, v)
+                end
+                acc = acc + el
+                if acc < 0.05 then return end
+                acc = 0
+                local zoom = Comp.zoom()
+                local m = Comp.eval(pts, zoom)
+                local x = PX(math.max(0, math.min(Comp.ZMAX, zoom)))
+                self.mark:ClearAllPoints(); self.mark:SetPoint("BOTTOMLEFT", g, "BOTTOMLEFT", x, 0)
+                self.dot:ClearAllPoints(); self.dot:SetPoint("CENTER", g, "BOTTOMLEFT", x, PY(m))
+                local sh = db.profiles[editProfile].shoulder or 0
+                self.nowTxt:SetText(string.format(L["Now: %.1f yd, x%.2f, shoulder %.2f"], zoom, m, sh * m))
+            end)
+            f:SetScript("OnHide", function(self) self.dragging = nil end)
+            return f
+        end
+        panel.OpenCurve = function()
+            if not ED then ED = Build() end
+            sel = nil
+            Load(); Redraw()
+            ED:Show()
+            ED:Raise()
+        end
+        panel.CurveRefresh = function()
+            if ED and ED:IsShown() then sel = nil; Load(); Redraw() end
+        end
+        panel:HookScript("OnHide", function() if ED then ED:Hide() end end)
+    end
 
     -- camera zoom distance: either a fixed distance or the last zoom you used (one or the other)
     Header(S, "Zoom distance", COL2, -114)
@@ -3497,7 +3916,7 @@ local function BuildPanel()
     MakeSlider(S, "Widen with many enemies (up to, deg)", "crowdFov", 0, 20, 1, c2, -584, true, EP)
 
     local fovNote = S:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    fovNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1, -560)
+    fovNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1, -588)
     fovNote:SetWidth(CW)
     fovNote:SetJustifyH("LEFT")
     fovNote:SetText(L["Priority: Dungeon/Raid, Combat, Talk, Swimming, Indoors, City, then Exploration. Field of view: 50 to 90, the same range as the game's own slider. Speed and crowd widening add to it, up to 90."])
@@ -4325,10 +4744,9 @@ SlashCmdList["ACAM"] = function(msg)
     elseif cmd == "shoulder" and n then
         db.profiles.world.shoulder = math.max(-10, math.min(10, n)); Refresh()
     elseif cmd == "shouldercomp" and not n then
-        db.shoulderCompOn = not db.shoulderCompOn; ApplyShoulder(true)
-        Print("Shoulder zoom compensation " .. (db.shoulderCompOn and "on." or "off."))
-    elseif cmd == "shouldercomp" and n then
-        db.shoulderComp = math.max(-1.5, math.min(1.5, n)); ApplyShoulder(true)
+        local pr = db.profiles[editProfile]
+        pr.shComp = not pr.shComp; ApplyShoulder(true)
+        Print(string.format("Shoulder zoom compensation for %s: %s.", PROFILE_NAMES[editProfile], pr.shComp and "on" or "off"))
     elseif cmd == "zoom" and n then
         db.profiles.world.zoom = math.max(1, math.min(3.5, n)); Refresh()
     elseif cmd == "head" and n then
@@ -4436,6 +4854,24 @@ events:SetScript("OnEvent", function(self, event, arg1)
                 if P[name].fovSpeed == nil then P[name].fovSpeed = 0 end
                 if P[name].crowdFov == nil then P[name].crowdFov = 0 end
             end
+        end
+        -- shoulder compensation is a curve per situation (the old single strength becomes a curve)
+        do
+            local on, k = db.shoulderCompOn ~= false, tonumber(db.shoulderComp) or 0
+            for _, name in ipairs(PROFILES) do
+                local pr = P[name]
+                if pr then
+                    if pr.shComp == nil then
+                        pr.shComp = on and k ~= 0
+                        pr.shCurve = (pr.shComp and Detect.comp.fromPower(k)) or Detect.comp.FLAT
+                    elseif not Detect.comp.valid(pr.shCurve) then
+                        pr.shCurve = Detect.comp.FLAT
+                    end
+                end
+            end
+            db.shoulderCompOn, db.shoulderComp = nil, nil
+            if not Detect.comp.valid(db.shCompCurve) then db.shCompCurve = Detect.comp.FLAT end
+            db.shCompShare = db.shCompShare == true
         end
         if freshInstall then
             WriteSnapshot(FactorySnapshot()) -- brand-new installs start from the factory preset

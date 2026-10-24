@@ -2,6 +2,12 @@
 
 Versioning: the third digit counts meaningful changes since the second digit last went up (bumped automatically). The first two digits change only with explicit permission.
 
+## 1.3.10
+- **Shoulder compensation by curve, per situation.** Under Over-the-shoulder on the Situations tab: a **Compensate for zoom** tick for each situation and an **Edit curve** button. The curve editor shows camera distance (0–50 yd) along the bottom and a multiplier (0–4, 1.0 = the slider's value) up the side. Drag a point, click empty space to add one, right-click to remove it (up to 24); small `< > - +` buttons nudge the selected point for gamepad/touch; **Flat / Gentle / Full** are starting shapes. A blue marker shows where your camera is right now and the resulting shoulder value. **Use this one curve for all situations** shares a single curve (each situation still has its own on/off tick); turning it off gives every situation a copy of the shared curve.
+- The General tab's **Camera framing** section (the compensation tick and strength slider) is removed. Saves from before get a curve per situation that matches their old strength, so nothing moves. Cinematic (gentle, 0.4) and Controller (0.6) ship with compensation on in every situation using a shared curve; Default, Tactical and Comfort ship with it off. Curves are part of presets, undo and share codes.
+- The compensated shoulder follows zooming every frame (it used to refresh five times a second while the camera was otherwise settled). Old strength-only share codes still load; their compensation value is ignored.
+- `/acam shouldercomp` now toggles compensation for the situation being edited.
+
 ## 1.3.9
 - **Over the shoulder unified across situations, and ordered across presets.** Within a preset the offset used to swing widely (Controller 1.6–3, Cinematic 1.2–2.2, Tactical 0–1.5, Default 0.5–1.5). Every situation of a preset now uses one value, and from least to most: Comfort 0.3 (a slight offset), Tactical 0.7, Default 1.0, Controller 1.6, Cinematic 2.2. Saved settings are untouched until a preset is applied again.
 
