@@ -24,7 +24,7 @@ local L = setmetatable({}, { __index = function(_, key)
 end })
 
 -- Version information and release notes.
-local Meta = { version = "1.3.11" }
+local Meta = { version = "1.3.12" }
 do
     local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
     if get then
@@ -33,6 +33,9 @@ do
     end
 end
 Meta.notes = {
+    "Two new presets: Action RPG (Controller framing, steered with the mouse) and First Person (the field of view is narrow indoors and in Talk, medium in cities, combat and dungeons, wide exploring and swimming)",
+    "New on the General tab: Lock the camera to the mouse, and a \"Free the cursor\" key (Key Bindings > AddOns) that frees the cursor while held, or toggles it. The cursor also comes back by itself while you type, aim a spell or have a window open. /acam mouselock",
+    "Situations: a set zoom distance can now be 0 (first person)",
     "New under Situations > More: head tracking (strength, standing, moving, reaction speed) per situation, tuned for action in combat; zoom rules (exact, in only, out only, range); and, in Talk, fading the rest of the interface while a window is open",
     "New on the General tab: smooth, accelerating mouse-wheel zoom",
     "Presets now look further ahead: the camera tilts up more in exploration, cities, swimming, dungeons and combat",
@@ -108,6 +111,8 @@ local DEFAULTS = {
     talkKeepChat = true,
     talkKeepMinimap = false,
     talkKeepFrames = "", -- more frames to leave alone, by name, separated by commas
+    mlOn = false,        -- mouse-look lock: the mouse always turns the camera, no button needed
+    mlToggle = false,    -- the free-cursor key toggles the cursor (otherwise it frees it while held)
     shCompShare = false, -- one shoulder compensation curve shared by every situation
     shCompCurve = "0:1,50:1", -- the shared curve: "camera distance:multiplier" points
     zoom = 3.5,          -- max zoom factor (this client accepts up to 3.5)
@@ -984,6 +989,70 @@ function F.step(dt)
 end
 end
 
+-- Mouse-look lock ---------------------------------------------------------------
+-- With mlOn the camera follows the mouse at all times, like holding the right mouse button, so you play with the
+-- mouse aiming the view. The cursor comes back on its own while you type, carry an item or aim a spell, and while
+-- a window such as bags, a vendor, the map, the game menu or this settings window is open. The "Free the cursor"
+-- key gives it back too: while held, or until pressed again with mlToggle on.
+do
+local M = { owned = false, free = false, t = 1 }
+Detect.ml = M
+local WINDOWS = { "GameMenuFrame", "StaticPopup1", "StaticPopup2", "StaticPopup3", "StaticPopup4", "ContainerFrameCombinedBags",
+    "TenKsARPGCameraPanel", "TenKsARPGCameraCurve", "TenKsARPGCameraWelcome", "LootFrame", "GroupLootFrame1" }
+for i = 1, 13 do WINDOWS[#WINDOWS + 1] = "ContainerFrame" .. i end
+local function Shown(name)
+    local f = _G[name]
+    if type(f) ~= "table" or not f.IsShown then return false end
+    local ok, v = pcall(f.IsShown, f)
+    return ok and v == true
+end
+-- true while something on screen needs the cursor
+function M.busy()
+    if M.free then return true end
+    if GetCurrentKeyBoardFocus and GetCurrentKeyBoardFocus() then return true end
+    if SpellIsTargeting and Truth(SpellIsTargeting) then return true end
+    if GetCursorInfo and GetCursorInfo() then return true end
+    if Detect.npc and Detect.npc() then return true end
+    for _, n in ipairs(WINDOWS) do if Shown(n) then return true end end
+    if UISpecialFrames then
+        for _, n in ipairs(UISpecialFrames) do if Shown(n) then return true end end
+    end
+    return false
+end
+local function Stop()
+    if M.owned and IsMouselooking and IsMouselooking() and MouselookStop then pcall(MouselookStop) end
+    M.owned = false
+end
+function M.reset() M.free = false; Stop() end
+function M.step(dt)
+    M.t = M.t + dt
+    if M.t < 0.05 then return end
+    M.t = 0
+    if not (MouselookStart and IsMouselooking) then return end
+    if not (db and db.enabled and db.mlOn) then if M.owned then Stop() end return end
+    local looking = IsMouselooking()
+    if M.busy() then
+        if M.owned then Stop() end
+        return
+    end
+    if looking then return end -- already turning (ours, or a held mouse button)
+    M.owned = false
+    if IsMouseButtonDown and (IsMouseButtonDown("LeftButton") or IsMouseButtonDown("RightButton")) then return end
+    if pcall(MouselookStart) then M.owned = true end
+end
+-- the key binding: "down" / "up"
+function M.key(state)
+    if not db then return end
+    if db.mlToggle then
+        if state ~= "up" then M.free = not M.free end
+    else
+        M.free = state ~= "up"
+    end
+    M.t = 1
+    M.step(0)
+end
+end
+
 local function BeginTransition(oldName, newName)
     for _, k in ipairs(PROFILE_KEYS) do from[k] = shown[k] end
     local dur = db.blendTime or 1.2
@@ -1368,7 +1437,7 @@ local function StepTilt(dt)
         wanted = shown.tilt or 0
     end
     local pending = wanted - tiltApplied
-    local blocked = IsMouselooking and IsMouselooking()
+    local blocked = IsMouselooking and IsMouselooking() and not Detect.ml.owned -- a held mouse button, not the lock
     if math.abs(pending) < 0.1 or blocked or dt <= 0 then
         if tiltMoving then
             pcall(MoveViewUpStart, 0); pcall(MoveViewDownStart, 0)
@@ -1553,6 +1622,7 @@ local function Disable()
     VigHide()
     LbHide()
     Detect.fade.reset()
+    Detect.ml.reset()
     RestoreOriginals()
     Detect.rz.sync()
     NP.restore()
@@ -2637,6 +2707,7 @@ fxDriver:SetScript("OnUpdate", function(self, elapsed)
         end
     end
 
+    Detect.ml.step(elapsed) -- mouse-look lock
     Detect.fade.step(elapsed) -- Talk: fades the rest of the interface while a window is open
 
     -- settings the game may have changed back
@@ -2806,7 +2877,7 @@ local SNAPSHOT_SKIP = {
     shoulder = true, zoom = true, headMove = true, yaw = true, pitch = true,
     activePreset = true, lowCpu = true, npOrig = true, npInit = true, npManage = true, npEnemies = true, npEnemyMinor = true,
     npEnemyPets = true, npEnemyTotems = true, npFriendlyPlayers = true, npFriendlyNpcs = true,
-    npFriendlyPets = true, npFriendlyTotems = true, rzOn = true, rzStep = true, rzSpeed = true, talkKeepFrames = true, -- nameplates are a personal screen preference, not part of a preset
+    npFriendlyPets = true, npFriendlyTotems = true, rzOn = true, rzStep = true, rzSpeed = true, talkKeepFrames = true, mlToggle = true, -- nameplates are a personal screen preference, not part of a preset
 }
 local PROFILE_FIELDS = {
     on = "boolean", tilt = "number", fov = "number", shoulder = "number", zoom = "number",
@@ -2820,7 +2891,7 @@ local PROFILE_FIELDS = {
 }
 local RANGES = {
     fov = { 50, 90 }, zoom = { 1, 3.5 }, shoulder = { -10, 10 }, headMove = { 0, 1 }, yaw = { 0, 1 },
-    pitch = { 0, 1 }, tilt = { -20, 20 }, blend = { 0.2, 5 }, zoomDist = { 1, 40 }, blendTime = { 0.2, 5 },
+    pitch = { 0, 1 }, tilt = { -20, 20 }, blend = { 0.2, 5 }, zoomDist = { 0, 40 }, blendTime = { 0.2, 5 },
     rampTime = { 0.1, 2 }, smooth = { 0.2, 1 }, fxSize = { 40, 300 },
     fxOffset = { -100, 100 }, fxSpeed = { -180, 180 }, fxAlpha = { 0.2, 1 }, fxCurve = { 0, 1 },
     fxDistShift = { -40, 40 }, fxGlow = { 0, 1 },
@@ -2884,12 +2955,14 @@ local function CurrentSnapshot()
 end
 
 -- Built-in presets are the factory configuration plus a list of changes.
-local BUILTIN_ORDER = { "Default", "Cinematic", "Tactical", "Comfort", "Controller" }
+local BUILTIN_ORDER = { "Default", "Cinematic", "Tactical", "Comfort", "Controller", "Action RPG", "First Person" }
 local BUILTIN_NOTES = {
     Default = L["The addon's signature look: a tilted, easy-going exploration view, a steady wide combat view with a light edge vignette, a close indoor view, and a cinematic Talk view with letterbox bars."],
     Cinematic = L["Film-like. Long lenses, high smooth camera, slow transitions. Indoors it tightens into a close shot, Talk gets a tight portrait with wide letterbox bars, swimming drifts. Light vignettes add depth without darkening the scene."],
     Tactical = L["For raids and dungeons: the view stays wide, level and steady in every situation, with quick, subtle changes, almost no pull toward targets, and no letterbox bars."],
     Controller = L["Close over-the-shoulder action camera for a controller, from the couch or on a handheld: the character sits low to one side with a tight follow distance, strong pull toward targets so you rarely need the right stick, a snappy combat camera that widens as enemies and speed pick up, a bigger targeting frame, and no head bob. The settings window also works with a controller."],
+    ["Action RPG"] = L["Plays like a modern action RPG with mouse and keyboard: the camera is locked to the mouse, so you aim and steer by moving it, with the Controller preset's close over-the-shoulder framing and snappy combat camera, but a lighter pull toward targets so it never fights your hand. Bind \"Free the cursor\" to get the pointer back."],
+    ["First Person"] = L["Through your character's eyes, with the camera locked to the mouse. The field of view tells you where you are: narrow indoors and in Talk, medium in cities, combat and dungeons, wide out exploring and swimming. Scroll out any time; the next situation change brings you back in."],
     Comfort = L["One steady view everywhere, for anyone who gets motion sick. No bobbing, sway, terrain tilt or dynamic pitch, a constant field of view, no situation changes, slow soft turning, and a light vignette to rest the eyes."],
 }
 local FactorySnapshot, BUILTIN_CHANGES
@@ -3033,6 +3106,36 @@ for _, set in ipairs({ { cinematic, 0.4 }, { controller, 0.6 } }) do
         set[1][name].shComp, set[1][name].shCurve = true, Detect.comp.fromPower(set[2])
     end
 end
+-- Action RPG: the Controller framing, steered with the mouse (camera locked to it). Target pull is lighter so it
+-- never fights the mouse, and the camera turns quicker.
+local arpg = {}
+for _, name in ipairs(PROFILES) do
+    local t = {}
+    for k, v in pairs(controller[name]) do t[k] = v end
+    t.yaw, t.pitch = (t.yaw or 0.25) * 0.6, (t.pitch or 0.25) * 0.6
+    arpg[name] = t
+end
+arpg.combat.zoomDist, arpg.world.zoomDist, arpg.city.zoomDist = 9, 11, 11
+top["Action RPG"] = {}
+for k, v in pairs(top.Controller) do top["Action RPG"][k] = v end
+top["Action RPG"].mlOn, top["Action RPG"].smooth, top["Action RPG"].rampTime, top["Action RPG"].fxSize = true, 0.85, 0.25, 230
+-- First Person: in your character's eyes in every situation; the field of view marks the situation.
+local NARROW, MEDIUM, WIDE = 60, 75, 90
+local fpFov = { indoors = NARROW, npc = NARROW, city = MEDIUM, combat = MEDIUM, instance = MEDIUM, world = WIDE, swimming = WIDE }
+local fp = {}
+for _, name in ipairs(PROFILES) do
+    fp[name] = { fov = fpFov[name], shoulder = 0, shComp = false, tilt = 0, zoom = 3, zoomSet = true, zoomRemember = false,
+                 zoomKind = 0, zoomDist = 0, headMove = 0.35, headStand = 0.15, headMoving = 0.35, headReact = 10,
+                 yaw = 0.12, pitch = 0.08, blend = 1.2, vigAlpha = 0.1, vigRange = 0.25, vigCurve = 2.6, fovSpeed = 0, crowdFov = 0 }
+end
+fp.combat.yaw, fp.combat.pitch, fp.combat.blend, fp.combat.headMove, fp.combat.headMoving = 0.2, 0.12, 0.8, 0.5, 0.5
+fp.npc.yaw, fp.npc.pitch, fp.npc.lbSize, fp.npc.vigAlpha = 0.5, 0.4, 0.04, 0.2
+fp.indoors.vigAlpha = 0.18
+top["First Person"] = {
+    mlOn = true, smooth = 0.9, rampTime = 0.3, blendAll = false, slowExit = false, blendTime = 1.2,
+    bobbing = false, terrainTilt = false, dynamicPitch = false, shCompShare = false,
+    fxSize = 220, fxGlow = 0.7, fxAlpha = 0.8, fxSpeed = 4, fxLock = true, fxHit = true,
+}
 -- Comfort: the same steady view everywhere; only the world profile is in use.
 local comfort = {}
 for _, name in ipairs(PROFILES) do
@@ -3046,6 +3149,8 @@ BUILTIN_CHANGES = {
     Tactical = Flatten(top.Tactical, Situations(tactical)),
     Comfort = Flatten(top.Comfort, Situations(comfort)),
     Controller = Flatten(top.Controller, Situations(controller)),
+    ["Action RPG"] = Flatten(top["Action RPG"], Situations(arpg)),
+    ["First Person"] = Flatten(top["First Person"], Situations(fp)),
 }
 end
 local function BuiltinSnapshot(name)
@@ -3201,6 +3306,8 @@ local WELCOME = {
     { "Tactical", { 1.00, 0.35, 0.30 }, "Wide, level and steady. Made for dungeons and raids." },
     { "Comfort", { 0.45, 0.85, 0.35 }, "One steady view, no bobbing or sway. Easy on the eyes." },
     { "Controller", { 1.00, 0.50, 0.75 }, "Close over-the-shoulder action camera for a gamepad, from the couch or a handheld." },
+    { "Action RPG", { 1.00, 0.55, 0.20 }, "Camera locked to the mouse, over the shoulder. Aim and steer like an action game." },
+    { "First Person", { 0.30, 0.75, 0.95 }, "Through your own eyes, mouse-locked. The field of view changes with the situation." },
 }
 local win
 function TenKsUltimateARPGCamera_ShowWelcome()
@@ -3218,7 +3325,7 @@ function TenKsUltimateARPGCamera_ShowWelcome()
         close:SetPoint("TOPRIGHT", -2, -2)
     end
     win = f
-    f:SetSize(440, 424)
+    f:SetSize(440, 440)
     f:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
     f:SetFrameStrata("DIALOG")
     f:SetMovable(true); f:EnableMouse(true); f:SetClampedToScreen(true)
@@ -3240,7 +3347,7 @@ function TenKsUltimateARPGCamera_ShowWelcome()
     intro:SetJustifyH("LEFT")
     intro:SetText(L["Pick a starting look. You can change it any time: type /acam and open the Presets tab."])
     for i, w in ipairs(WELCOME) do
-        local y = -92 - (i - 1) * 52
+        local y = -92 - (i - 1) * 40
         local b = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
         b:SetSize(110, 28)
         b:SetPoint("TOPLEFT", f, "TOPLEFT", 20, y)
@@ -3506,17 +3613,23 @@ local function BuildPanel()
     end
     panel.RefreshWhy = RefreshWhy
 
-    Header(G, "Macros", COL2, -206)
+    Header(G, "Mouse look", COL2, -206)
+    local mlCb = MakeCheck(G, "Lock the camera to the mouse", "mlOn", COL2, -228, function() Detect.ml.reset() end)
+    Tip(mlCb, "Lock the camera to the mouse", "The mouse turns the camera all the time, as if you were holding the right mouse button, so you aim and steer with the mouse like an action game. The cursor comes back on its own while you type, aim a spell, carry an item, or have bags, a vendor, the map, the game menu or this window open.")
+    local mlTg = MakeCheck(G, "Free-cursor key toggles (instead of hold)", "mlToggle", COL2, -254, function() Detect.ml.reset() end)
+    Tip(mlTg, "Free-cursor key toggles (instead of hold)", "Bind \"Free the cursor\" in Key Bindings > AddOns. Off: the cursor is free while you hold the key. On: press once for the cursor, press again to go back to mouse look.")
+    local mlNote = G:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    mlNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL2, -280)
+    mlNote:SetWidth(CW)
+    mlNote:SetJustifyH("LEFT")
+    mlNote:SetText(L["Free-cursor key: Key Bindings > AddOns."])
+
     local macroBtn = CreateFrame("Button", nil, G, "UIPanelButtonTemplate")
-    macroBtn:SetSize(CW, 24)
-    macroBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", COL2, -232)
+    macroBtn:SetSize(CW, 22)
+    macroBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", COL2, -300)
     macroBtn:SetText(L["Create / update macros"])
     macroBtn:SetScript("OnClick", CreateMacros)
-    local macroNote = G:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    macroNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL2, -262)
-    macroNote:SetWidth(CW)
-    macroNote:SetJustifyH("LEFT")
-    macroNote:SetText(L["Makes \"ACAM Menu\" (opens this window) and \"ACAM Toggle\" (turns the addon on/off). Find them in /macro and drag them onto a bar."])
+    Tip(macroBtn, "Create / update macros", "Makes \"ACAM Menu\" (opens this window) and \"ACAM Toggle\" (turns the addon on/off). Find them in /macro and drag them onto a bar.")
 
     -- Targeting frame ---------------------------------------------------
     Header(T, "Shape and style", COL1, -58)
@@ -4139,7 +4252,7 @@ local function BuildPanel()
         Tip(b, k[1], k[2])
         kindBtns[i] = b
     end
-    zoomSlider = MakeSlider(S2, "Zoom distance (yards)", "zoomDist", 1, 40, 0.5, c2, -292, true, EP)
+    zoomSlider = MakeSlider(S2, "Zoom distance (yards)", "zoomDist", 0, 40, 0.5, c2, -292, true, EP)
     minSlider = MakeSlider(S2, "Nearest distance (yards)", "zoomMin", 1, 40, 0.5, c2, -292, true, EP)
     maxSlider = MakeSlider(S2, "Farthest distance (yards)", "zoomMax", 1, 40, 0.5, c2, -337, true, EP)
     panel.ZoomUI = ZoomUI
@@ -4236,8 +4349,8 @@ local function BuildPanel()
     end
     for i = 1, #BUILTIN_ORDER + MAX_CUSTOM_PRESETS do
         local row = CreateFrame("Button", nil, R)
-        row:SetSize(CW, 19)
-        row:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1, -80 - (i - 1) * 20)
+        row:SetSize(CW, 17)
+        row:SetPoint("TOPLEFT", panel, "TOPLEFT", COL1, -80 - (i - 1) * 18)
         local hl = row:CreateTexture(nil, "HIGHLIGHT")
         hl:SetAllPoints(); hl:SetColorTexture(1, 0.82, 0, 0.12)
         row:SetHighlightTexture(hl)
@@ -4745,8 +4858,10 @@ end
 BINDING_HEADER_TENKSARPGCAMERA = "10k's Ultimate ARPG Camera"
 BINDING_NAME_TENKSARPGCAMERA_MENU = L["Open the settings window"]
 BINDING_NAME_TENKSARPGCAMERA_TOGGLE = L["Turn the camera on or off"]
+BINDING_NAME_TENKSARPGCAMERA_CURSOR = L["Free the cursor (mouse-look lock)"]
 function TenKsUltimateARPGCamera_ToggleMenu() TogglePanel() end
 function TenKsUltimateARPGCamera_ToggleCamera() SetAddonEnabled(not db.enabled) end
+function TenKsUltimateARPGCamera_CursorKey(state) Detect.ml.key(state) end
 
 ---------------------------------------------------------------------------
 -- Slash commands & events
@@ -4756,6 +4871,7 @@ local function Help()
     Print(L["Commands (/acam):"])
     print("  (no argument)         open the settings window")
     print("  presets / preset <name>  list the presets / apply one")
+    print("  mouselock             lock the camera to the mouse (bind \"Free the cursor\" to get the cursor back)")
     print("  toggle                switch the camera on or off (used by the toggle macro)")
     print("  undo                  go back to the settings you had before the last preset (again to redo)")
     print("  why                   show which situation is active and why")
@@ -4816,6 +4932,10 @@ SlashCmdList["ACAM"] = function(msg)
             if panel and panel.RefreshPresetList then panel.RefreshPresetList() end
             Print("Applied preset \"" .. name .. "\".")
         end
+    elseif cmd == "mouselock" then
+        db.mlOn = not db.mlOn
+        Detect.ml.reset()
+        Print(string.format("Mouse-look lock: %s.", db.mlOn and "on" or "off"))
     elseif cmd == "welcome" then
         TenKsUltimateARPGCamera_ShowWelcome()
         return

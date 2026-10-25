@@ -2,6 +2,15 @@
 
 Versioning: the third digit counts meaningful changes since the second digit last went up (bumped automatically). The first two digits change only with explicit permission.
 
+## 1.3.12
+- **Lock the camera to the mouse** (General tab > Mouse look, or `/acam mouselock`). The mouse turns the camera all the time, as if the right button were held. The cursor comes back by itself while you type, aim a spell, carry an item, or have bags, loot, a vendor or dialogue, the map, the game menu, a popup or this settings window open, and the lock picks up again when they close. A held mouse button is left alone. Turning the addon off releases it. Part of presets.
+- **Free-cursor key.** New binding "Free the cursor (mouse-look lock)" under Key Bindings > AddOns. By default the cursor is free while the key is held; with **Free-cursor key toggles** on, one press frees it and the next gives the camera back. The hold/toggle choice is personal (not part of presets).
+- **New preset: Action RPG.** The Controller preset's framing (shoulder 1.6, compensation curve, tilt, snappy combat, FOVs) steered with the mouse: mouse lock on, target pull at 60% of Controller's so it never fights your hand, quicker turning (0.85), follow distance 11 yd exploring / in cities and 9 yd in combat.
+- **New preset: First Person.** Zoom 0 in every situation, no shoulder offset or tilt, light head tracking, light target pull, mouse lock on. Field of view marks the situation: **narrow 60** indoors and in Talk, **medium 75** in cities, combat and dungeons, **wide 90** exploring and swimming. Speed / crowd widening is off so the scheme stays readable. You can still scroll out; the next situation change brings you back in.
+- Situations > More: a set zoom distance can now be 0 (first person).
+- Terrain/forward tilt keeps working while the mouse lock holds the camera (it still pauses while you hold a mouse button yourself).
+- Preset list rows are a little tighter to fit seven built-ins; the welcome window lists the two new presets.
+
 ## 1.3.11
 - **Situations tab has a second page, "More"** (button beside the situation buttons). It holds, per situation: **head tracking**, **zoom rules** and, for Talk, the **interface fade**. Max zoom factor and head movement moved there from the first page.
 - **Head tracking.** Strength (the old "Head movement"), plus new **Strength while standing**, **Strength while moving** and **Reaction speed** (the game's head-movement damp rate for standing and moving). Combat is tuned to feel like action: Default (0.8 / moving 0.85 / standing 0.2 / reaction 12), Cinematic (0.9 / 0.9 / 0.25 / 9, a touch lazier), Controller (0.7 / 0.9 / 0.15 / 14). Tactical and Comfort keep the head still on purpose. The values ease between situations like the other settings.
